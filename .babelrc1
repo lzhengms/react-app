@@ -1,0 +1,38 @@
+
+{
+    "presets": [
+        ["es2015",
+            {
+                "modules": false
+            }
+        ],
+        "stage-0",
+        "react",
+        ["@babel/preset-env", {
+            "targets": {
+                "browsers": [
+                    "last 2 versions",
+                    "safari>=7"
+                ],
+                "node": "current"
+            },
+            "useBuiltIns": "entry",
+            "debug": true,
+            "modules": true
+        }]
+    ],
+    "plugins": [
+        ["transform-runtime", {
+            "helpers": true,
+            "regenerator": true,
+            "polyfill": true,
+            "moduleName": "babel-runtime"
+        }],
+        ["import", {
+            "styles": "../styles",
+            "libraryDirectory": "",
+            "libraryName": "material"
+        }]
+
+    ]
+}
