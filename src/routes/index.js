@@ -13,7 +13,6 @@ import { ConnectedRouter } from 'react-router-redux';
 import { withStyles } from 'material-ui/styles';
 import { bindActionCreators } from 'redux';
 import { connect } from 'react-redux';
-import Header from 'components/Header/';
 import Layout from '../containers/Layout/';
 import Launch from '../components/Launch/';
 import { history } from 'store/';
