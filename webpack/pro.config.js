@@ -45,6 +45,7 @@ const options = {
       'process.env': {
         'NODE_ENV': JSON.stringify('production')
       },
+      '__DEV__': false
     },
     plugins: [
         new CleanWebpackPlugin(['dist']),

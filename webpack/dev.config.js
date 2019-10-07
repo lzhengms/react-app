@@ -12,7 +12,7 @@ const publicPath = '/static/'
 const options = {
     publicPath,
     loaders: {
-        styles: [ 'style-loader', 'css-loader', 'postcss-loader',  ],
+        styles: [ 'style-loader', 'css-loader', 'postcss-loader'],
         images: 'url-loader?limit=50000&name=[path][name].[ext]?[hash:8]',
         iconFonts: 'url-loader?limit=10000&name=[path][name].[ext]?[hash:8]'
     },
@@ -20,6 +20,7 @@ const options = {
         'process.env': {
             'NODE_ENV': JSON.stringify('dev')
           },
+         '__DEV__': true 
     },
     plugins: [
         new webpack.HotModuleReplacementPlugin() // 开启webpack的热替换

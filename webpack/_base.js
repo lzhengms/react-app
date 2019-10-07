@@ -19,12 +19,15 @@ module.exports = (options) => {
             publicPath,
             path: path.resolve(rootPath, 'dist/'),
             filename: '[name].[hash].js',
-            chunkFilename:'[hash].js'
+            chunkFilename:'[name].[chunkhash].js'
         },
         resolve: {
             modules: [ 'node_modules' ],
             alias: {
-
+               components: path.resolve(rootPath, 'src/components'),
+               containers: path.resolve(rootPath, 'src/containers'),
+               store: path.resolve(rootPath, 'src/store'),
+               styles: path.resolve(rootPath, 'src/styles'),
             },
             extensions: ['.js', '.jsx', '.json']
         },
@@ -46,12 +49,13 @@ module.exports = (options) => {
                 },
                 {  // 解析css 
                     test: /\.s?[ac]ss/,
-                    use: options.loaders.style
+                    exclude: /node_modules/,
+                    use: options.loaders.styles
                 },
                 {
                     // 解析图片
                     test: /\.(png|jpe?g|gif|svg)/,
-                    use: options.loaders.imges
+                    use: options.loaders.images
                 },
                 {
                     // 解析字体

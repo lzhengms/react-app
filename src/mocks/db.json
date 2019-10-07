@@ -1,0 +1,1003 @@
+{
+    "posts": [
+        {
+            "id": 1029,
+            "date": "2018-08-12T23:45:27",
+            "date_gmt": "2018-08-12T15:45:27",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=1029"
+            },
+            "modified": "2018-08-15T23:32:47",
+            "modified_gmt": "2018-08-15T15:32:47",
+            "slug": "js_settimeout_promise",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2018/08/12/js_settimeout_promise/",
+            "title": {
+                "rendered": "浅析setTimeout与Promise"
+            },
+            "content": {
+                "rendered": "<p>关于JavaScript异步编程，<a href=\"http://blog.codingplayboy.com/2017/04/25/js_async/\">前文</a>解析过了JavaScript并发模型，该并发模型基于事件循环。正巧又在Stackoverflow上回答了一个<a href=\"https://stackoverflow.com/questions/46375711/what-is-the-relationship-between-event-loop-and-promise/46375948#46375948\">关于setTimeout与Promise执行顺序相关的问题</a>，于是总结这一知识点，与更多读者分享，同时完善JavaScript异步编程系列文章。</p>\n<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#i\"><span class=\"toc_number toc_depth_1\">1</span> 前言</a></li><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_1\">2</span> 事件循环</a><ul><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_2\">2.1</span> 可执行代码</a></li><li><a href=\"#i-4\"><span class=\"toc_number toc_depth_2\">2.2</span> 执行上下文栈</a></li></ul></li><li><a href=\"#i-5\"><span class=\"toc_number toc_depth_1\">3</span> 异步任务</a><ul><li><a href=\"#i-6\"><span class=\"toc_number toc_depth_2\">3.1</span> 任务队列</a><ul><li><a href=\"#MacroTask_Queue\"><span class=\"toc_number toc_depth_3\">3.1.1</span> MacroTask Queue</a></li><li><a href=\"#MicroTask_Queue\"><span class=\"toc_number toc_depth_3\">3.1.2</span> MicroTask Queue</a></li><li><a href=\"#MacroTaskMicroTask\"><span class=\"toc_number toc_depth_3\">3.1.3</span> MacroTask和MicroTask</a></li></ul></li></ul></li><li><a href=\"#i-7\"><span class=\"toc_number toc_depth_1\">4</span> 回顾</a></li></ul></div>\n<h2><span id=\"i\">前言</span></h2>\n<p>我们先看一到常见的前端面试题：</p>\n<pre><code class=\"javascript\">var p1 = new Promise(function(resolve, reject){\n    resolve(1);\n})\nsetTimeout(function(){\n  console.log(\"will be executed at the top of the next Event Loop\");\n},0)\np1.then(function(value){\n  console.log(\"p1 fulfilled\");\n})\nsetTimeout(function(){\n  console.log(\"will be executed at the bottom of the next Event Loop\");\n},0)\n</code></pre>\n<p>上例代码执行输出顺序如何？这道题也是本文创作的源泉，其答案是：</p>\n<pre><code class=\"json\">p1 fulfilled\nwill be executed at the top of the next Event Loop\nwill be executed at the bottom of the next Event Loop\n</code></pre>\n<p>接下来展开解释输出结果原因，看完本文应该能了解setTimeout和Promise的区别。</p>\n<h2><span id=\"i-2\">事件循环</span></h2>\n<p>事件循环相关详细内容在<a href=\"http://blog.codingplayboy.com/2017/04/25/js_async/#Event_Loop\">JavaScript异步编程</a>一文已经介绍过，本文不再赘述，进行一些补充和总结：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/08/eventLoopFlow.png\" alt=\"事件循环\" /></p>\n<h3><span id=\"i-3\">可执行代码</span></h3>\n<p>思考一下，JavaScript代码是如何执行的呢？是一行一行代码执行的吗？当然不是，JavaScript 引擎一块一块地解析，执行JavaScript代码，而非一行一行进行。在解析，执行代码块时，会需要有一个前期工作，如变量／函数提升，定义变量／函数。这里所说的代码块，通常称作<strong>可执行代码（execuable code），通常包括全局代码，函数代码，eval执行代码</strong>。而所做的前期工作就是创建执行上下文（execution context）。</p>\n<h3><span id=\"i-4\">执行上下文栈</span></h3>\n<p>每当JavaScript引擎开始执行应用程序时，都会创建一个执行上下文栈（后进先出），用以管理执行上下文。在执行一段可执行代码时，会创建一个执行上下文，然后将其压入栈，执行完毕便将该上下文退栈。</p>\n<pre><code class=\"javascript\">function funA() {\n    console.log('funA')\n}\n\nfunction funB() {\n    fun3A();\n}\n\nfunction funC() {\n    funB();\n}\n\nfunC();\n</code></pre>\n<pre><code class=\"javascript\">ECStack.push(&lt;funC&gt; functionContext);\n\n// funC中调用funB，需创建funB执行上下文，入栈\nECStack.push(&lt;funB&gt; functionContext);\n\n// funB内调用funA，入栈上下文\nECStack.push(&lt;funA&gt; functionContext);\n\n// funA执行完毕，退栈\nECStack.pop();\n\n// funB执行完毕，退栈\nECStack.pop();\n\n// funC执行完毕，退栈\nECStack.pop();\n\n// javascript继续执行后续代码\n</code></pre>\n<p>另外，所有的代码都是从全局环境开始执行，所以，必然栈底是全局执行上下文。</p>\n<h2><span id=\"i-5\">异步任务</span></h2>\n<p>回顾JavaScript事件循环并发模型，我们了解了<code>setTimeout</code>和<code>Promise</code>调用的都是异步任务，这一点是它们共同之处，也即都是通过任务队列进行管理／调度。那么它们有什么区别吗？下文继续介绍。</p>\n<h3><span id=\"i-6\">任务队列</span></h3>\n<p>前文已经介绍了任务队列的基础内容和机制，可选择查看，本文对任务队列进行拓展介绍。JavaScript通过任务队列管理所有异步任务，而任务队列还可以细分为MacroTask Queue和MicoTask Queue两类。</p>\n<h4><span id=\"MacroTask_Queue\">MacroTask Queue</span></h4>\n<p>MacroTask Queue（宏任务队列）主要包括<code>setTimeout</code>, <code>setInterval</code>, <code>setImmediate</code>, <code>requestAnimationFrame</code>, NodeJS中的`I/O等。</p>\n<h4><span id=\"MicroTask_Queue\">MicroTask Queue</span></h4>\n<p>MicroTask Queue（微任务队列）主要包括两类：</p>\n<ol>\n<li>独立回调microTask：如Promise，其成功／失败回调函数相互独立；</li>\n<li>复合回调microTask：如 <code>Object.observe</code>, <code>MutationObserver</code> 和NodeJs中的 <code>process.nextTick</code> ，不同状态回调在同一函数体；</li>\n</ol>\n<h4><span id=\"MacroTaskMicroTask\">MacroTask和MicroTask</span></h4>\n<p>JavaScript将异步任务分为MacroTask和MicroTask，那么它们区别何在呢？</p>\n<ol>\n<li>依次执行同步代码直至执行完毕；</li>\n<li>检查MacroTask 队列，若有触发的异步任务，则取第一个并调用其事件处理函数，然后跳至第三步，若没有需处理的异步任务，则直接跳至第三步；</li>\n<li>检查MicroTask队列，然后执行所有已触发的异步任务，依次执行事件处理函数，直至执行完毕，然后跳至第二步，若没有需处理的异步任务中，则直接返回第二步，依次执行后续步骤；</li>\n<li>最后返回第二步，继续检查MacroTask队列，依次执行后续步骤；</li>\n<li>如此往复，若所有异步任务处理完成，则结束；</li>\n</ol>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/08/task_queue.png\" alt=\"task Queue\" /></p>\n<blockquote>\n<p>The microTask queue is processed after callbacks as long as no other JavaScript is mid-execution, and at the end of each task.<br />\n  只要没有其他JavaScript代码在执行，并且在每个任务结束时，就会开始处理microTask队列。</p>\n</blockquote>\n<p>需要注意的是，此处说的的<code>每个任务结束时</code>中的任务通常就是指macroTask，有一个比较特殊的任务- <strong>脚本执行（<code>JavaScript Run</code>）</strong>，也是一个macroTask，会在JavaScript脚本执行时，立即将<code>JavaScript Run</code>任务入栈macroTask队列。</p>\n<h2><span id=\"i-7\">回顾</span></h2>\n<p>本文内容介绍基本结束，那么前文第一个题目输出顺序是为什么呢？简单解释一下：</p>\n<ol>\n<li>开始执行JavaScript脚本，将任务JavaScript Run入栈macroTask队列；</li>\n<li>同步resolve <code>Promise</code>后；</li>\n<li>入栈第一个setTimeout任务进入macroTask队列（0ms间隔）;</li>\n<li>入栈<code>Promise.then()</code>任务进入microTask队列；</li>\n<li>入栈第二个setTimeout任务进入macroTask队列（0ms间隔）；</li>\n<li>同步执行代码完毕，退出第一个macroTask，即JavaScript Run;</li>\n<li>执行清空microTask；</li>\n<li>执行下一个macroTask；</li>\n</ol>\n<p>最后，我们以一个题目再次回顾一下内容：</p>\n<pre><code class=\"javascript\">setTimeout(function(){\n  console.log(\"will be executed at the top of the next Event Loop\")\n},0)\nvar p1 = new Promise(function(resolve, reject){\n    setTimeout(() =&gt; { resolve(1); }, 0);\n});\nsetTimeout(function(){\n    console.log(\"will be executed at the bottom of the next Event Loop\")\n},0)\nfor (var i = 0; i &lt; 100; i++) {\n    (function(j){\n        p1.then(function(value){\n           console.log(\"promise then - \" + j)\n        });\n    })(i)\n}\n\n</code></pre>\n<p>代码输出结果是什么呢？快点确认一下吧：</p>\n<pre><code class=\"json\">will be executed at the top of the next Event Loop\npromise then - 0\npromise then - 1\npromise then - 2\n...\npromise then - 99\nwill be executed at the bottom of the next Event Loop\n</code></pre>\n<ol>\n<li>首先同步执行完所有代码，其间注册了三个setTimeout异步任务，100个Promise异步任务；</li>\n<li>然后检查MacroTask队列，取第一个到期的MacroTask，执行输出<code>will be executed at the top of the next Event Loop</code>;</li>\n<li>然后检查MicroTask队列，发现没有到期的MicroTask，进入第4步；</li>\n<li>再次检查MacroTask，执行第二个setTimeout处理函数，resolve Promise；</li>\n<li>然后检查MicroTask队列，发现Promise已解决，其异步处理函数均可执行，依次执行，输出<code>promise then - 0</code> 至<code>promise then - 99</code>；</li>\n<li>最后再次检查MacroTask队列，执行输出<code>will be executed at the bottom of the next Event Loop</code></li>\n<li>交替往复检查两个异步任务队列，直至执行完毕；</li>\n</ol>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>关于JavaScript异步编程，前文解析过了JavaScript并发模型，该并发模型基于事件循环。正好在Stackoverflow上回答了一个关于setTimeout与Promise执行顺序相关的问题，于是总结这一知识点，与更多读者分享，同时完善JavaScript异步编程系列文章。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                7
+            ],
+            "tags": [
+                30,
+                210,
+                209,
+                39,
+                212,
+                211,
+                51
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/1029"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=1029"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/1029/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=1029"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=1029"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=1029"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 1017,
+            "date": "2018-08-01T15:32:07",
+            "date_gmt": "2018-08-01T07:32:07",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=1017"
+            },
+            "modified": "2018-08-01T15:33:23",
+            "modified_gmt": "2018-08-01T07:33:23",
+            "slug": "react_native_android_pkg",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2018/08/01/react_native_android_pkg/",
+            "title": {
+                "rendered": "React Native Android打包"
+            },
+            "content": {
+                "rendered": "<p>Android要求所有应用都有一个数字签名才能被允许安装在用户手机上，所以在把应用发布到Google Play store这些应用市场之前，你需要先生成一个签名的APK包，详细细节可参考<a href=\"https://developer.android.com/studio/publish/app-signing\">Android应用签名</a>，本文主要介绍React Native App快速签名。</p>\n<p>在打包之前确保我们安装了Android开发环境，参考<a href=\"http://blog.codingplayboy.com/2018/05/23/react_native_android_dev/\">React Native安卓开发环境搭建</a>。</p>\n<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#i\"><span class=\"toc_number toc_depth_1\">1</span> 秘钥</a></li><li><a href=\"#Gradle\"><span class=\"toc_number toc_depth_1\">2</span> 设置Gradle</a></li><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_1\">3</span> 添加签名</a></li><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_1\">4</span> 打包</a></li><li><a href=\"#i-4\"><span class=\"toc_number toc_depth_1\">5</span> 真机调试</a></li></ul></div>\n<h2><span id=\"i\">秘钥</span></h2>\n<p>我们需要创建一个签名秘钥，之后用该秘钥签名App，可以使用<code>Android Studio</code>生成秘钥并签名App，但是比较繁琐，我们介绍React Native App快速签名打包流程。</p>\n<p>首先，使用<code>keytool</code>工具生成秘钥：</p>\n<pre><code class=\"shell\">keytool -genkey -v -keystore my-release-key.keystore -alias my-key-alias -keyalg RSA -keysize 2048 -validity 10000\n</code></pre>\n<p><em>注：Windows上<code>keytool</code>命令放在<code>JDK</code>的bin目录中（比如<code>C:\\Program Files\\Java\\jdkx.x.x_x\\bin</code>），你可能需要在命令行中先进入该目录才能执行此命令。</em></p>\n<h2><span id=\"Gradle\">设置Gradle</span></h2>\n<ol>\n<li>把<code>my-release-key.keystore</code>文件放到你工程中的<code>android/app</code>文件夹下；</li>\n<li>编辑<code>~/.gradle/gradle.properties</code>（没有这个文件你就创建一个），添加如下的代码（注意把其中的<code>****</code>替换为相应密码）；</li>\n</ol>\n<pre><code class=\"shell\">MYAPP_RELEASE_STORE_FILE=my-release-key.keystore\nMYAPP_RELEASE_KEY_ALIAS=my-key-alias\nMYAPP_RELEASE_STORE_PASSWORD=*****\nMYAPP_RELEASE_KEY_PASSWORD=*****\n</code></pre>\n<p><em>注：~表示用户目录，比如windows上可能是<code>C:\\Users\\用户名</code>，而mac上可能是<code>/Users/用户名</code>。</em></p>\n<h2><span id=\"i-2\">添加签名</span></h2>\n<p>打开项目目录下的<code>android/app/build.gradle</code>文件，添加如下的签名配置：</p>\n<pre><code class=\"json\">...\nandroid {\n    ...\n    defaultConfig { ... }\n    signingConfigs {\n        release {\n            storeFile file(MYAPP_RELEASE_STORE_FILE)\n            storePassword MYAPP_RELEASE_STORE_PASSWORD\n            keyAlias MYAPP_RELEASE_KEY_ALIAS\n            keyPassword MYAPP_RELEASE_KEY_PASSWORD\n        }\n    }\n    buildTypes {\n        release {\n            ...\n            signingConfig signingConfigs.release\n        }\n    }\n}\n...\n</code></pre>\n<h2><span id=\"i-3\">打包</span></h2>\n<p>在终端执行如下指令：</p>\n<pre><code class=\"shell\">$ cd android\n$ ./gradlew assembleRelease\n</code></pre>\n<ol>\n<li><code>assembleRelease</code>参数会把所有用到的JavaScript代码都打包到一起，然后内置到APK包中;</li>\n<li>支持自定义JavaScript代码以及静态资源打包的文件名或目录结构等，可以阅读<code>android/app/build.gradle</code>文件；</li>\n</ol>\n<p><em>在windows的传统CMD命令行下则需要去掉<code>./</code>。</em></p>\n<p>App安装包在<code>android/app/build/outputs/apk/app-release.apk</code>，可以直接分发安装了。</p>\n<h2><span id=\"i-4\">真机调试</span></h2>\n<p>上面指令是打出生产环境安装包，很多时候我们开发过程中需要在真机进行调试，这个时候我们需要提前做好：</p>\n<ol>\n<li>确保手机与电脑设备在同一WiFI环境下；</li>\n<li>需要开启手机设备USB开发者模式；</li>\n</ol>\n<p>然后在命令终端输入指令查看：</p>\n<pre><code class=\"shell\">adb devices\n</code></pre>\n<p>确保手机设备已正确连接，且确保一次仅连接一个手机设备。</p>\n<p>然后执行：</p>\n<pre><code>react-native run-android\n</code></pre>\n<p>即可在设备中安装调试包。</p>\n<p>也许我们将看到如下异常提示，显示无法加载JS bundle资源：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/08/rn-android-load-jsbundle-error.png\" alt=\"Error\" /></p>\n<p>这个是电脑ip端口资源转发异常造成，对于Android5.0以上系统，我们只需要在PC端执行：</p>\n<pre><code class=\"shell\">adb reverse tcp:8081 tcp:8081\n</code></pre>\n<p>表示adb发送指令至手机设备，服务即可正常连接。</p>\n<p>而对于Android5.0以下系统，则需要另外处理，摇晃设备，或者执行如下指令：</p>\n<pre><code class=\"shell\">adb shell input keyevent 82\n</code></pre>\n<p>打开手机开发者菜单：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/08/rn-android-dev-tools.png\" alt=\"Dev Tools\" /></p>\n<p>然后依次点击<code>Dev Settings</code>，<code>Debug server host for device</code>，输入PC端ip地址及端口号，如：<code>10.0.2.2:8081</code>，PC端ip地址查看使用<code>ifconfig</code>(Linux)或<code>ipconfig</code>(windows)指令。</p>\n<p>最后Reload JS即可开始调试应用。</p>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>Android要求所有应用都有一个数字签名才能被允许安装在用户手机上，所以在把应用发布到Google Play store这些应用市场之前，你需要先生成一个签名的APK包，详细细节可参考[Android应用签名](https://developer.android.com/studio/publish/app-signing)，本文主要介绍React Native App快速签名。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                179,
+                67
+            ],
+            "tags": [],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/1017"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=1017"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/1017/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=1017"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=1017"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=1017"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 1006,
+            "date": "2018-05-23T16:31:37",
+            "date_gmt": "2018-05-23T08:31:37",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=1006"
+            },
+            "modified": "2018-05-24T14:27:35",
+            "modified_gmt": "2018-05-24T06:27:35",
+            "slug": "react_native_android_dev",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2018/05/23/react_native_android_dev/",
+            "title": {
+                "rendered": "React Native安卓开发环境搭建"
+            },
+            "content": {
+                "rendered": "<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#React_Native\"><span class=\"toc_number toc_depth_1\">1</span> React Native安卓开发环境搭建</a><ul><li><a href=\"#i\"><span class=\"toc_number toc_depth_2\">1.1</span> 安装前置工具</a><ul><li><a href=\"#Node\"><span class=\"toc_number toc_depth_3\">1.1.1</span> Node</a></li><li><a href=\"#React_Native_CLI\"><span class=\"toc_number toc_depth_3\">1.1.2</span> React Native CLI</a></li></ul></li><li><a href=\"#JDK\"><span class=\"toc_number toc_depth_2\">1.2</span> 安装JDK</a></li><li><a href=\"#Android\"><span class=\"toc_number toc_depth_2\">1.3</span> 安装Android开发环境</a><ul><li><a href=\"#Android_Studio\"><span class=\"toc_number toc_depth_3\">1.3.1</span> Android Studio</a></li><li><a href=\"#Android_SDK\"><span class=\"toc_number toc_depth_3\">1.3.2</span> Android SDK</a></li><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_3\">1.3.3</span> 配置环境变量</a></li></ul></li><li><a href=\"#AVD\"><span class=\"toc_number toc_depth_2\">1.4</span> 创建安卓模拟器（AVD）</a><ul><li><a href=\"#AVD-2\"><span class=\"toc_number toc_depth_3\">1.4.1</span> 命令行创建AVD</a></li></ul></li><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_2\">1.5</span> 运行</a></li></ul></li></ul></div>\n<h1><span id=\"React_Native\">React Native安卓开发环境搭建</span></h1>\n<p>上一篇文章主要介绍了React Native  iOS开发环境的搭建，主要是Xcode的安装和配置，本篇介绍Android开发环境搭建，主要是SDK及Android Studio的安装和配置，依然以Mac为例。</p>\n<h2><span id=\"i\">安装前置工具</span></h2>\n<p>安装开发环境前，需要安装一些React Native开发工具或环境，如<code>Node</code>，<code>React Native Command line</code>等。</p>\n<h3><span id=\"Node\">Node</span></h3>\n<p>推荐使用Homebrew安装Node：</p>\n<pre><code class=\"shell\">brew install node\n</code></pre>\n<p><em>请确保Node版本大于8。</em></p>\n<h3><span id=\"React_Native_CLI\">React Native CLI</span></h3>\n<p>安装React Native命令行工具：</p>\n<pre><code class=\"shell\">npm install -g react-native-cli\n</code></pre>\n<h2><span id=\"JDK\">安装JDK</span></h2>\n<p>因为Android应用使用Java语言开发，所以需要安装Java Development Kit，即Java开发工具集，<a href=\"http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html\">点此前往下载</a>。</p>\n<h2><span id=\"Android\">安装Android开发环境</span></h2>\n<h3><span id=\"Android_Studio\">Android Studio</span></h3>\n<p>第一步需要安装<a href=\"https://developer.android.com/studio/index.html\">Android Studio</a>，选择自定义安装模式，然后选择如下安装模块：</p>\n<ul>\n<li><code>Android SDK</code></li>\n<li><code>Android SDK Platform</code></li>\n<li><code>Performance (Intel ® HAXM)</code></li>\n<li><code>Android Virtual Device</code></li>\n</ul>\n<p>然后继续安装即可。</p>\n<h3><span id=\"Android_SDK\">Android SDK</span></h3>\n<p>Android Studio installs the latest Android SDK by default. Building a React Native app with native code, however, requires the <code>Android 6.0 (Marshmallow)</code> SDK in particular. Additional Android SDKs can be installed through the SDK Manager in Android Studio.</p>\n<p>Android Studio默认是安装最新的Android SDK，然而，构建一个React Native App需要使用Android 6.0（Marshmallow）版本SDK。我们需要通过Android Studio的SDK管理器安装额外的Android SDK，在Android Studio的欢迎界面，点击右下角的Configure配置，下拉选择<code>SDK Manager</code>:</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/05/andorid-studio-welcome.png\" alt=\"Welcome\" /></p>\n<p>选择<code>SDK Platforms</code>，勾选<code>Show Package Details</code>，然后点开<code>Android 6.0(marshmallow)</code>，选中：</p>\n<ul>\n<li><code>Google APIs</code></li>\n<li><code>Android SDK Platform 23</code></li>\n<li><code>Sources for Android 23</code></li>\n<li><code>Intel x86 Atom_64 System Image</code></li>\n<li><code>Google APIs Intel x86 Atom_64 System Image</code></li>\n</ul>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/05/android-studio-install-sdk.png\" alt=\"SDK install\" /></p>\n<p>然后点击<code>SDK Tools</code>，依然勾选<code>Show Package Details</code>，展开<code>Android SDK Build-Tools</code>，勾选<code>23.0.1</code>。</p>\n<p>最后选择<code>Apply</code>，确认安装即可。</p>\n<h3><span id=\"i-2\">配置环境变量</span></h3>\n<p>构建App前还需要配置一些环境变量，否则会抛出异常，在<code>$HOME/.bash_profile</code>配置文件中添加以下变量：</p>\n<pre><code class=\"shell\">export ANDROID_HOME=$HOME/Library/Android/sdk\nexport PATH=$PATH:$ANDROID_HOME/emulator\nexport PATH=$PATH:$ANDROID_HOME/tools/bin\nexport PATH=$PATH:$ANDROID_HOME/platform-tools\n</code></pre>\n<pre><code class=\"shell\">cd ~\nvi .bash_profile\n</code></pre>\n<p>按如上指令打开文件，按<code>i</code>键进行编辑，再按<code>esc</code>，退出编辑模式，接着按<code>:wq</code>保存退出即可。</p>\n<p>最后还需要执行指令：</p>\n<pre><code class=\"shell\">source ~/.bash_profile\n</code></pre>\n<p>当然也可以在其他用户配置文件中设置上面的相关变量，如<code>.bashrc</code>, <code>zshrc</code>等文件。</p>\n<h2><span id=\"AVD\">创建安卓模拟器（AVD）</span></h2>\n<p>打开Android Studio的AVD Manager即安卓模拟设备管理器，打开项目，选择<code>Tools-》AVD Manager</code>，可以创建或者编辑模拟设备:</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/05/android-studio-avd-2.png\" alt=\"Android Studio AVD\" /></p>\n<h3><span id=\"AVD-2\">命令行创建AVD</span></h3>\n<p>当然也可以使用命令行方式创建AVD：</p>\n<pre><code class=\"shell\">avdmanager create avd -n Pixel-23 -d 2 -k \"system-images;android-23;default;x86_64\"\n</code></pre>\n<p><code>-n</code>是指定模拟设备名称，可自定义，<code>-d</code>指定设备target id，其值根据以下指令返回值对应：</p>\n<pre><code class=\"shell\">avdmanager list targets\n</code></pre>\n<p>然后可以调起模拟器：</p>\n<pre><code class=\"shell\">emulator -avd Pixel-23\n</code></pre>\n<p>另外，可使用以下指令查看可用模拟设备：</p>\n<pre><code class=\"shell\">emulator -list-avds\nor\nadb devices\n</code></pre>\n<h2><span id=\"i-3\">运行</span></h2>\n<p>随后可以执行<code>react-native init myApp</code>创建一个React Native App，然后运行：</p>\n<pre><code class=\"shell\">emulator -avd Pixel-23\ncd myApp\nreact-native run-android\n</code></pre>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>之前一篇文章主要介绍了React Native  iOS开发环境的搭建，主要是Xcode的安装和配置，本篇介绍Android开发环境搭建，主要是SDK及Android Studio的安装和配置，依然以Mac为例。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                179,
+                67
+            ],
+            "tags": [
+                208,
+                172
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/1006"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=1006"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/1006/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=1006"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=1006"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=1006"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 997,
+            "date": "2018-05-19T20:57:45",
+            "date_gmt": "2018-05-19T12:57:45",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=997"
+            },
+            "modified": "2018-05-21T13:20:15",
+            "modified_gmt": "2018-05-21T05:20:15",
+            "slug": "react_native_babel_error",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2018/05/19/react_native_babel_error/",
+            "title": {
+                "rendered": "React Native babel编译异常问题解决"
+            },
+            "content": {
+                "rendered": "<p>最近以React Native技术开发App应用，搭建项目时遇到坑颇多，网上查找解决方法费时，费精力，总结一些问题，希望能对读者有所帮助。</p>\n<p>这次遇见的问题是babel编译ES6源码时，抛出的异常，导致无法启动项目，执行<code>react-native run-ios</code>，启动模拟器后报错：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/05/rn-bundling-error-babel.png\" alt=\"RN bundling error babel\" /></p>\n<p>可以看到，有用的信息：Error bundling Cannot find module @babel/core，而使用<code>react-native-cli</code>创建的React Native App应用使用的是babel预设方案：<code>babel-preset-react-native</code>，这是它的最新版本的一个bug，我们可以将其版本退回至<code>2.1.0</code>，首先删除它（使用yarn或npm进行安装包管理皆可）：</p>\n<pre><code class=\"shell\">yarn remove babel-preset-react-native\nor\nnpm unstall babel-preset-react-native\n</code></pre>\n<p>然后安装指定版本：</p>\n<pre><code class=\"shell\">yarn add --dev babel-preset-react-native@2.1.0\nor\nnpm install --save-dev babel-preset-react-native@2.1.0\n</code></pre>\n<p>最后，再次启动应用：</p>\n<pre><code class=\"shell\">react-native run-ios\nor \nreact-native run-android\n</code></pre>\n<p>应用正常运行。</p>\n<h3>React Native 版本问题</h3>\n<p>当然也许你还会遇到一个异常：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/05/rn-error-no-bundle-url.png\" alt=\"No Bundle Url Present\" /></p>\n<p>这个问题是由于最新React Native版本，需要Xcode版本大于9，Mac OS不低于10.13，所以可以将React Native版本将至<code>0.53.3</code>：</p>\n<pre><code class=\"shell\">react-native init myApp --version 0.53.3\n</code></pre>\n<h3>Babel preset版本问题</h3>\n<p>前面对于babel编译问题，指出将版本回降至<code>2.1.0</code>，正常是没有问题的，但是如果使用了ES6新语法<code>generator</code>时，需要注意，下面这种<code>export</code>导出写法，将会报错：</p>\n<pre><code class=\"javascript\">export default function * root () {\n  yield ...\n}\n</code></pre>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/05/rn-error-babel-preset.png\" alt=\"Babel preset error\" /></p>\n<p>需要改成如下导出方式，先赋值再导出：</p>\n<pre><code class=\"javascript\">const root = function * root () {\n  yield ...\n}\nexport default root;\n</code></pre>\n<p>当然，如果不希望修改代码，则需要将<code>babel-preset-react-native</code>版本降至<code>2.0.0</code>:</p>\n<pre><code class=\"shell\">rm -rf ./node_modules\nyarn cache clean or npm cache clean\nyarn add --dev babel-preset-react-native@2.0.0\nyarn install\nwatchman watch-del-all // 如果使用了watchman\n</code></pre>\n<p>然后杀掉上次应用启动的进程，重新启动应用，即可正常编译，运行：</p>\n<pre><code class=\"shell\">react-native run-ios\n</code></pre>\n<p>可以参考<a href=\"https://forums.expo.io/t/how-to-clear-the-react-native-packager/1352\">How to clear the react native packager</a>。</p>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>最近以React Native技术开发App应用，搭建项目时遇到坑颇多，网上查找解决方法费时，费精力，总结一些问题，希望能对读者有所帮助。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                179,
+                67
+            ],
+            "tags": [
+                192,
+                207,
+                172
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/997"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=997"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/997/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=997"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=997"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=997"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 991,
+            "date": "2018-04-15T15:18:46",
+            "date_gmt": "2018-04-15T07:18:46",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=991"
+            },
+            "modified": "2018-04-15T15:19:58",
+            "modified_gmt": "2018-04-15T07:19:58",
+            "slug": "react_native_dev",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2018/04/15/react_native_dev/",
+            "title": {
+                "rendered": "React Native项目真机调试(一)"
+            },
+            "content": {
+                "rendered": "<p>之前介绍过如何搭建React Native开发环境并创建项目，<a href=\"http://blog.codingplayboy.com/2017/09/10/react-native-init/\">React Native开发环境搭建</a>方式更适合在需要构建原生ios或者android代码时使用，但是其真机调试比较麻烦，本篇介绍在不需要构建原生代码时，如何快速创建React Native项目，并且快速开启真机调试。</p>\n<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#i\"><span class=\"toc_number toc_depth_1\">1</span> 前言</a></li><li><a href=\"#create-react-native-app\"><span class=\"toc_number toc_depth_1\">2</span> create-react-native-app</a><ul><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_2\">2.1</span> 创建项目</a></li><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_2\">2.2</span> 启动项目</a></li><li><a href=\"#i-4\"><span class=\"toc_number toc_depth_2\">2.3</span> 真机调试</a></li></ul></li><li><a href=\"#i-5\"><span class=\"toc_number toc_depth_1\">3</span> 提示</a></li></ul></div>\n<h2><span id=\"i\">前言</span></h2>\n<p>本篇介绍的方式相较于前篇，不需要安装，配置<code>Xcode</code>和<code>Android Studio</code>等工具和环境，只需要安装<code>Node</code>，另外推荐使用<code>Yarn</code>代替<code>Npm</code>进行安装包管理（可选）：</p>\n<pre><code class=\"shell\">npm install -g yarn\n</code></pre>\n<h2><span id=\"create-react-native-app\">create-react-native-app</span></h2>\n<p>接下来使用<code>npm</code>或<code>yarn</code>安装<code>create-react-native-app</code>脚手架：</p>\n<pre><code class=\"shell\">$ npm install -g create-react-native-app\n  # or\n$ yarn global add create-react-native-app\n</code></pre>\n<p><em>注：Node版本必须大于版本v6，npm于版本v3。</em></p>\n<h3><span id=\"i-2\">创建项目</span></h3>\n<p>然后执行初始化指令：</p>\n<pre><code class=\"Shell\">$ create-react-native-app my-app\n</code></pre>\n<p>即在当前目录下创建了<code>my-app</code>项目，在该项目目录下可执行命令如下：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/04/rn-my-app-install-info-shell.png\" alt=\"shell\" /></p>\n<h3><span id=\"i-3\">启动项目</span></h3>\n<p>接着就可以启动项目，然后真机调试了：</p>\n<pre><code class=\"shell\">$ cd my-app\n\n$ yarn start \n # or\n$ npm start\n</code></pre>\n<p>项目本地启动，并在控制台输出如下信息：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/04/rn-my-app-yarn-start.png\" alt=\"yarn start\" /></p>\n<h3><span id=\"i-4\">真机调试</span></h3>\n<p>项目已经在本地启动了，如果需要真机调试就需要在移动设备上安装<a href=\"https://expo.io/\">Expo</a>客户端（android 可能需要在google store上下载，备用下载资源地址：链接: https://pan.baidu.com/s/1LHIuId8ycxDJtaBFV9f7eA 密码: u3bd），然后打开Expo应用，扫描控制台输出的二维码即可真机访问应用，并支持项目代码更新热加载。</p>\n<h2><span id=\"i-5\">提示</span></h2>\n<p>需要注意几个问题：</p>\n<ol>\n<li>\n<p>此方式创建的项目，无法编辑原生ios或android代码；</p>\n</li>\n<li>\n<p>移动设备安装的Expo客户端版本需要大于支持项目所安装的<code>expo</code> SDK版本的客户端版本，否则真机上无法预览项目，如下图，对应支持expo <code>26.0.0</code>版本SDK的客户端版本需要大于<code>v2.4.0</code>，如果使用文章中提供的下载的Expo链接，则需要将expo SDK版本降级到<code>25.0.0</code>：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/04/rn-my-app-dep-expo-version.png\" alt=\"expo SDK\" /></p>\n</li>\n</ol>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>之前介绍过如何搭建React Native开发环境并创建项目，该方式更适合在需要构建原生ios或者android代码时使用，但是其真机调试比较麻烦，本篇介绍在不需要构建原生代码时，如何快速创建React Native项目，并且快速开启真机调试。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                179,
+                67
+            ],
+            "tags": [
+                206,
+                205,
+                172,
+                204
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/991"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=991"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/991/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=991"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=991"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=991"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 979,
+            "date": "2018-02-11T13:36:36",
+            "date_gmt": "2018-02-11T05:36:36",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=979"
+            },
+            "modified": "2018-03-01T13:00:25",
+            "modified_gmt": "2018-03-01T05:00:25",
+            "slug": "mobx-vs-redux",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2018/02/11/mobx-vs-redux/",
+            "title": {
+                "rendered": "你需要Mobx还是Redux？"
+            },
+            "content": {
+                "rendered": "<p>在过去一年，越来越多的项目继续或者开始使用React和Redux开发，这是目前前端业内很普遍的一种前端项目解决方案，但是随着开发项目越来越多，越来越多样化时，个人又有了不同的感受和想法。是不是因为已经有了一个比较普遍的，熟悉的项目技术栈，我们就一直完全沿用呢，有没有比他更适合的方案呢？恰逢团队最近有一个新项目，于是博主开始思考，有没有可能使用其他可替代技术开发呢？既能提高开发效率，又能拓展技术储备和眼界，经过调研，选择了Mobx，最终使用React+Mobx搭建了新项目，本篇总结分享从技术选型到项目实现的较完整过程，希望共同进步。</p>\n<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#i\"><span class=\"toc_number toc_depth_1\">1</span> 前言</a></li><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_1\">2</span> 状态管理</a></li><li><a href=\"#Mobx_VS_Redux\"><span class=\"toc_number toc_depth_1\">3</span> Mobx VS Redux</a><ul><li><a href=\"#Redux\"><span class=\"toc_number toc_depth_2\">3.1</span> Redux</a></li><li><a href=\"#Mobx\"><span class=\"toc_number toc_depth_2\">3.2</span> Mobx</a></li><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_2\">3.3</span> 函数式和面向对象</a></li><li><a href=\"#storestore\"><span class=\"toc_number toc_depth_2\">3.4</span> 单一store和多store</a></li><li><a href=\"#JavaScript\"><span class=\"toc_number toc_depth_2\">3.5</span> JavaScript对象和可观察对象</a></li><li><a href=\"#ImmutableMutable\"><span class=\"toc_number toc_depth_2\">3.6</span> 不可变（Immutable）和可变（Mutable）</a></li><li><a href=\"#mobx-reactreact-redux\"><span class=\"toc_number toc_depth_2\">3.7</span> mobx-react和react-redux</a></li></ul></li><li><a href=\"#Mobx-2\"><span class=\"toc_number toc_depth_1\">4</span> 选择Mobx的原因</a></li><li><a href=\"#Mobx-3\"><span class=\"toc_number toc_depth_1\">5</span> 不选择Mobx的可能原因</a></li><li><a href=\"#i-4\"><span class=\"toc_number toc_depth_1\">6</span> 代码对比</a><ul><li><a href=\"#i-5\"><span class=\"toc_number toc_depth_2\">6.1</span> 架构</a></li><li><a href=\"#Props\"><span class=\"toc_number toc_depth_2\">6.2</span> 注入Props</a></li><li><a href=\"#ActionReducer\"><span class=\"toc_number toc_depth_2\">6.3</span> 定义Action／Reducer等</a></li><li><a href=\"#Action\"><span class=\"toc_number toc_depth_2\">6.4</span> 异步Action</a></li></ul></li><li><a href=\"#i-6\"><span class=\"toc_number toc_depth_1\">7</span> 一些想法</a></li><li><a href=\"#i-7\"><span class=\"toc_number toc_depth_1\">8</span> 参考</a></li></ul></div>\n<h2><span id=\"i\">前言</span></h2>\n<p>当我们使用React开发web应用程序时，在React组件内，可以使用<code>this.setState()</code>和<code>this.state</code>处理或访问组件内状态，但是随着项目变大，状态变复杂，通常需要考虑组件间通信问题，主要包括以下两点：</p>\n<ol>\n<li>某一个状态需要在多个组件间共享（访问，更新）；</li>\n<li>某组件内交互需要触发其他组件的状态更新；</li>\n</ol>\n<p>关于这些问题，React组件开发实践推荐将公用组件状态提升：</p>\n<blockquote>\n<p>Often, several components need to reflect the same changing data. We recommend lifting the shared state up to their closest common ancestor</p>\n<p>通常多组件需要处理同一状态，我们推荐将共享状态提升至他们的共同最近祖先组件内。<a href=\"https://reactjs.org/docs/lifting-state-up.html\">更多详情查看</a></p>\n</blockquote>\n<p>当项目越发复杂时，我们发现仅仅是提升状态已经无法适应如此复杂的状态管理了，程序状态变得比较难同步，操作，到处是回调，发布，订阅，这意味着我们需要更好的状态管理方式，于是就引入了状态管理库，如<a href=\"https://redux.js.org/\">Redux</a>，<a href=\"https://mobx.js.org/index.html\">Mobx</a>，<a href=\"https://jumpsuit.js.org/\">Jumpsuit</a>，<a href=\"http://alt.js.org/\">Alt.js</a>等。</p>\n<h2><span id=\"i-2\">状态管理</span></h2>\n<p>状态管理库，无论是Redux，还是Mobx这些，其本质都是为了解决状态管理混乱，无法有效同步的问题，它们都支持：</p>\n<ol>\n<li>统一维护管理应用状态；</li>\n<li>某一状态只有一个可信数据来源（通常命名为store，指状态容器）；</li>\n<li>操作更新状态方式统一，并且可控（通常以action方式提供更新状态的途径）；</li>\n<li>支持将store与React组件连接，如<code>react-redux</code>，<code>mobx-react</code>；通常使用状态管理库后，我们将React组件从业务上划分为两类：\n<ol>\n<li>容器组件（Container Components）：负责处理具体业务和状态数据，将业务或状态处理函数传入展示型组件；</li>\n<li>展示型组件（Presentation Components）：负责展示视图，视图交互回调内调用传入的处理函数；</li>\n</ol>\n</li>\n</ol>\n<h2><span id=\"Mobx_VS_Redux\">Mobx VS Redux</span></h2>\n<p>目前来看，Redux已是React应用状态管理库中的霸主了，而Mobx则是一方诸侯，我们为什么要选择Mobx，而不是继续沿用Redux呢，那就需要比较他们的异同了。</p>\n<p>Mobx和Redux都是JavaScript应用状态管理库，都适用于React，Angular，VueJs等框架或库，而不是局限于某一特定UI库。</p>\n<h3><span id=\"Redux\">Redux</span></h3>\n<p>要介绍Redux，我们就不得不谈到Flux了:</p>\n<blockquote>\n<p>Flux is the application architecture that Facebook uses for building client-side web applications.It&#8217;s more of a pattern rather than a formal framework</p>\n<p>Flux是Facebook用来开发客户端-服务端web应用程序的应用架构，它更多是一种架构模式，而非一个特定框架。<a href=\"http://blog.codingplayboy.com/2016/09/25/react_flux/\">详解Flux</a>。</p>\n</blockquote>\n<p>而Redux更多的是遵循Flux模式的一种实现，是一个JavaScript库，它关注点主要是以下几方面：</p>\n<ol>\n<li>Action：一个JavaScript对象，描述动作相关信息，主要包含type属性和payload属性：\n<ol>\n<li>type：action 类型；</li>\n<li>payload：负载数据；</li>\n</ol>\n</li>\n<li>Reducer：定义应用状态如何响应不同动作（action），如何更新状态；</li>\n<li>Store：管理action和reducer及其关系的对象，主要提供以下功能：\n<ol>\n<li>维护应用状态并支持访问状态（getState()）；</li>\n<li>支持监听action的分发，更新状态（dispatch(action)）；</li>\n<li>支持订阅store的变更（subscribe(listener)）；</li>\n</ol>\n</li>\n<li>异步流：由于Redux所有对store状态的变更，都应该通过action触发，异步任务（通常都是业务或获取数据任务）也不例外，而为了不将业务或数据相关的任务混入React组件中，就需要使用其他框架配合管理异步任务流程，如<code>redux-thunk</code>，<code>redux-saga</code>等；</li>\n</ol>\n<h3><span id=\"Mobx\">Mobx</span></h3>\n<p>Mobx是一个透明函数响应式编程（Transparently Functional Reactive Programming，TFRP）的状态管理库，它使得状态管理简单可伸缩：</p>\n<blockquote>\n<p>Anything that can be derived from the application state, should be derived. Automatically.</p>\n<p>任何起源于应用状态的数据应该自动获取。</p>\n</blockquote>\n<p>其原理如图：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/03/mobx-flow.png\" alt=\"Mobx Philosophy\" /></p>\n<ol>\n<li>\n<p>Action：定义改变状态的动作函数，包括如何变更状态；</p>\n</li>\n<li>\n<p>Store：集中管理模块状态（State）和动作（action）；</p>\n</li>\n<li>\n<p>Derivation（衍生）：从应用状态中派生而出，且没有任何其他影响的数据，我们称为derivation（衍生），衍生在以下情况下存在：</p>\n<ol>\n<li>\n<p>用户界面；</p>\n</li>\n<li>\n<p>衍生数据；</p>\n<p>衍生主要有两种：</p>\n<ol>\n<li>Computed Values（计算值）：计算值总是可以使用纯函数（pure function）从当前可观察状态中获取；</li>\n<li>Reactions（反应）：反应指状态变更时需要自动发生的副作用，这种情况下，我们需要实现其读写操作；</li>\n</ol>\n</li>\n</ol>\n</li>\n</ol>\n<pre><code class=\"javascript\">import {observable, autorun} from 'mobx';\n\nvar todoStore = observable({\n    /* some observable state */\n    todos: [],\n\n    /* a derived value */\n    get completedCount() {\n        return this.todos.filter(todo =&gt; todo.completed).length;\n    }\n});\n\n/* a function that observes the state */\nautorun(function() {\n    console.log(\"Completed %d of %d items\",\n        todoStore.completedCount,\n        todoStore.todos.length\n    );\n});\n\n/* ..and some actions that modify the state */\ntodoStore.todos[0] = {\n    title: \"Take a walk\",\n    completed: false\n};\n// -&gt; synchronously prints: 'Completed 0 of 1 items'\n\ntodoStore.todos[0].completed = true;\n// -&gt; synchronously prints: 'Completed 1 of 1 items'\n</code></pre>\n<h3><span id=\"i-3\">函数式和面向对象</span></h3>\n<p>Redux更多的是遵循函数式编程（Functional Programming, FP）思想，而Mobx则更多从面相对象角度考虑问题。</p>\n<p>Redux提倡编写函数式代码，如reducer就是一个纯函数（pure function），如下：</p>\n<pre><code class=\"javascript\">(state, action) =&gt; {\n  return Object.assign({}, state, {\n    ...\n  })\n}\n</code></pre>\n<p>纯函数，接受输入，然后输出结果，除此之外不会有任何影响，也包括不会影响接收的参数；对于相同的输入总是输出相同的结果。</p>\n<p>Mobx设计更多偏向于面向对象编程（OOP）和响应式编程（Reactive Programming），通常将状态包装成可观察对象，于是我们就可以使用可观察对象的所有能力，一旦状态对象变更，就能自动获得更新。</p>\n<h3><span id=\"storestore\">单一store和多store</span></h3>\n<p>store是应用管理数据的地方，在Redux应用中，我们总是将所有共享的应用数据集中在一个大的store中，而Mobx则通常按模块将应用状态划分，在多个独立的store中管理。</p>\n<h3><span id=\"JavaScript\">JavaScript对象和可观察对象</span></h3>\n<p>Redux默认以JavaScript原生对象形式存储数据，而Mobx使用可观察对象：</p>\n<ol>\n<li>Redux需要手动追踪所有状态对象的变更；</li>\n<li>Mobx中可以监听可观察对象，当其变更时将自动触发监听；</li>\n</ol>\n<h3><span id=\"ImmutableMutable\">不可变（Immutable）和可变（Mutable）</span></h3>\n<p>Redux状态对象通常是不可变的（Immutable）：</p>\n<pre><code class=\"javascript\">switch (action.type) {\n  case REQUEST_POST:\n    return Object.assign({}, state, {\n      post: action.payload.post\n    });\n  default:\n    retur nstate;\n}\n</code></pre>\n<p>我们不能直接操作状态对象，而总是在原来状态对象基础上返回一个新的状态对象，这样就能很方便的返回应用上一状态；而Mobx中可以直接使用新值更新状态对象。</p>\n<h3><span id=\"mobx-reactreact-redux\">mobx-react和react-redux</span></h3>\n<p>使用Redux和React应用连接时，需要使用<code>react-redux</code>提供的<code>Provider</code>和<code>connect</code>：</p>\n<ol>\n<li><code>Provider</code>：负责将Store注入React应用；</li>\n<li><code>connect</code>：负责将store state注入容器组件，并选择特定状态作为容器组件props传递；</li>\n</ol>\n<p>对于Mobx而言，同样需要两个步骤：</p>\n<ol>\n<li><code>Provider</code>：使用<code>mobx-react</code>提供的<code>Provider</code>将所有stores注入应用；</li>\n<li>使用<code>inject</code>将特定store注入某组件，store可以传递状态或action；然后使用<code>observer</code>保证组件能响应store中的可观察对象（observable）变更，即store更新，组件视图响应式更新。</li>\n</ol>\n<h2><span id=\"Mobx-2\">选择Mobx的原因</span></h2>\n<ol>\n<li>学习成本少：Mobx基础知识很简单，学习了半小时官方文档和示例代码就搭建了新项目实例；而Redux确较繁琐，流程较多，需要配置，创建store，编写reducer，action，如果涉及异步任务，还需要引入<code>redux-thunk</code>或<code>redux-saga</code>编写额外代码，Mobx流程相比就简单很多，并且不需要额外异步处理库；</li>\n<li>面向对象编程：Mobx支持面向对象编程，我们可以使用<code>@observable</code> and <code>@observer</code>，以面向对象编程方式使得JavaScript对象具有响应式能力；而Redux最推荐遵循函数式编程，当然Mobx也支持函数式编程；</li>\n<li>模版代码少：相对于Redux的各种模版代码，如，actionCreater，reducer，saga／thunk等，Mobx则不需要编写这类模板代码；</li>\n</ol>\n<h2><span id=\"Mobx-3\">不选择Mobx的可能原因</span></h2>\n<ol>\n<li>过于自由：Mobx提供的约定及模版代码很少，这导致开发代码编写很自由，如果不做一些约定，比较容易导致团队代码风格不统一，所以当团队成员较多时，确实需要添加一些约定；</li>\n<li>可拓展，可维护性：也许你会担心Mobx能不能适应后期项目发展壮大呢？确实Mobx更适合用在中小型项目中，但这并不表示其不能支撑大型项目，关键在于大型项目通常需要特别注意可拓展性，可维护性，相比而言，规范的Redux更有优势，而Mobx更自由，需要我们自己制定一些规则来确保项目后期拓展，维护难易程度；</li>\n</ol>\n<h2><span id=\"i-4\">代码对比</span></h2>\n<p>接下来我们使用Redux和Mobx简单实现同一应用，对比其代码，看看它们各自有什么表现。</p>\n<h3><span id=\"i-5\">架构</span></h3>\n<p>在Redux应用中，我们首先需要配置，创建store，并使用<code>redux-thunk</code>或<code>redux-saga</code>中间件以支持异步action，然后使用<code>Provider</code>将store注入应用：</p>\n<pre><code class=\"javascript\">// src/store.js\nimport { applyMiddleware, createStore } from \"redux\";\nimport createSagaMiddleware from 'redux-saga'\nimport React from 'react';\nimport { Provider } from 'react-redux';\nimport { BrowserRouter } from 'react-router-dom';\nimport { composeWithDevTools } from 'redux-devtools-extension';\nimport rootReducer from \"./reducers\";\nimport App from './containers/App/';\n\nconst sagaMiddleware = createSagaMiddleware()\nconst middleware = composeWithDevTools(applyMiddleware(sagaMiddleware));\n\nexport default createStore(rootReducer, middleware);\n\n// src/index.js\n…\nReactDOM.render(\n  &lt;BrowserRouter&gt;\n    &lt;Provider store={store}&gt;\n      &lt;App /&gt;\n    &lt;/Provider&gt;\n  &lt;/BrowserRouter&gt;,\n  document.getElementById('app')\n);\n</code></pre>\n<p>Mobx应用则可以直接将所有store注入应用：</p>\n<pre><code class=\"javascript\">import React from 'react';\nimport { render } from 'react-dom';\nimport { Provider } from 'mobx-react';\nimport { BrowserRouter } from 'react-router-dom';\nimport { useStrict } from 'mobx';\nimport App from './containers/App/';\nimport * as stores from './flux/index';\n\n// set strict mode for mobx\n// must change store through action\nuseStrict(true);\n\nrender(\n  &lt;Provider {...stores}&gt;\n    &lt;BrowserRouter&gt;\n      &lt;App /&gt;\n    &lt;/BrowserRouter&gt;\n  &lt;/Provider&gt;,\n  document.getElementById('app')\n);\n</code></pre>\n<h3><span id=\"Props\">注入Props</span></h3>\n<p>Redux：</p>\n<pre><code class=\"javascript\">// src/containers/Company.js\n…\nclass CompanyContainer extends Component {\n  componentDidMount () {\n    this.props.loadData({});\n  }\n  render () {\n    return &lt;Company\n      infos={this.props.infos}\n      loading={this.props.loading}\n    /&gt;\n  }\n}\n…\n\n// function for injecting state into props\nconst mapStateToProps = (state) =&gt; {\n  return {\n    infos: state.companyStore.infos,\n    loading: state.companyStore.loading\n  }\n}\n\nconst mapDispatchToProps = dispatch =&gt; {\n  return bindActionCreators({\n      loadData: loadData\n  }, dispatch);\n}\n\n// injecting both state and actions into props\nexport default connect(mapStateToProps, { loadData })(CompanyContainer);\n</code></pre>\n<p>Mobx：</p>\n<pre><code class=\"javascript\">@inject('companyStore')\n@observer\nclass CompanyContainer extends Component {\n  componentDidMount () {\n    this.props.companyStore.loadData({});\n  }\n  render () {\n    const { infos, loading } = this.props.companyStore;\n    return &lt;Company\n      infos={infos}\n      loading={loading}\n    /&gt;\n  }\n}\n</code></pre>\n<h3><span id=\"ActionReducer\">定义Action／Reducer等</span></h3>\n<p>Redux：</p>\n<pre><code class=\"javascript\">// src/flux/Company/action.js\n…\nexport function fetchContacts(){\n  return dispatch =&gt; {\n    dispatch({\n      type: 'FREQUEST_COMPANY_INFO',\n      payload: {}\n    })\n  }\n}\n…\n\n// src/flux/Company/reducer.js\nconst initialState = {};\nfunction reducer (state = initialState, action) {\n  switch (action.type) {\n    case 'FREQUEST_COMPANY_INFO': {\n      return {\n        ...state,\n        contacts: action.payload.data.data || action.payload.data,\n        loading: false\n      }\n    }\n    default:\n      return state;\n  }\n}\n</code></pre>\n<p>Mobx:</p>\n<pre><code class=\"javascript\">// src/flux/Company/store.js\nimport { observable, action } from 'mobx';\n\nclass CompanyStore {\n  constructor () {\n    @observable infos = observable.map(infosModel);\n  }\n\n  @action\n  loadData = async(params) =&gt; {\n    this.loading = true;\n    this.errors = {};\n    return this.$fetchBasicInfo(params).then(action(({ data }) =&gt; {\n      let basicInfo = data.data;\n      const preCompanyInfo = this.infos.get('companyInfo');\n      this.infos.set('companyInfo', Object.assign(preCompanyInfo, basicInfo));\n      return basicInfo;\n    }));\n  }\n\n  $fetchBasicInfo (params) {\n    return fetch({\n      ...API.getBasicInfo,\n      data: params\n    });\n  }\n}\nexport default new CompanyStore();\n</code></pre>\n<h3><span id=\"Action\">异步Action</span></h3>\n<p>如果使用Redux，我们需要另外添加<code>redux-thunk</code>或<code>redux-saga</code>以支持异步action，这就需要另外添加配置并编写模板代码，而Mobx并不需要额外配置。</p>\n<p>redux-saga主要代码有：</p>\n<pre><code class=\"javascript\">// src/flux/Company/saga.js\n// Sagas\n// ------------------------------------\nconst $fetchBasicInfo = (params) =&gt; {\n  return fetch({\n    ...API.getBasicInfo,\n    data: params\n  });\n}\n\nexport function *fetchCompanyInfoSaga (type, body) {\n  while (true) {\n    const { payload } = yield take(REQUEST_COMPANY_INFO)\n    console.log('payload:', payload)\n    const data = yield call($fetchBasicInfo, payload)\n    yield put(receiveCompanyInfo(data))\n  }\n}\nexport const sagas = [\n  fetchCompanyInfoSaga\n];\n</code></pre>\n<h2><span id=\"i-6\">一些想法</span></h2>\n<p>无论前端还是后端，遇到问题，大多数时候也许大家总是习惯于推荐已经普遍推广使用的，习惯，熟悉就很容易变成顺理成章的，我们应该更进一步去思考，合适的才是更好的。</p>\n<p>当然对于“Redux更规范，更靠谱，应该使用Redux”或&#8221;Redux模版太多，太复杂了，应该选择Mobx&#8221;这类推断，我们也应该避免，这些都是相对而言，每个框架都有各自的实现，特色，及其适用场景，正比如Redux流程更复杂，但熟悉流程后就更能把握它的一些基础／核心理念，使用起来可能更有心得及感悟；而Mobx简单化，把大部分东西隐藏起来，如果不去特别研究就不能接触到它的核心／基本思想，也许使得开发者一直停留在使用层次。</p>\n<p>所以无论是技术栈还是框架。类库，并没有绝对的比较我们就应该选择什么，抛弃什么，我们应该更关注它们解决什么问题，它们解决问题的关注点，或者说实现方式是什么，它们的优缺点还有什么，哪一个更适合当前项目，以及项目未来发展。</p>\n<h2><span id=\"i-7\">参考</span></h2>\n<ol>\n<li><a href=\"https://hackernoon.com/becoming-fully-reactive-an-in-depth-explanation-of-mobservable-55995262a254\">An in-depth explanation of Mobx</a></li>\n<li><a href=\"https://www.robinwieruch.de/redux-mobx-confusion/\">Redux &amp; Mobx</a></li>\n<li><a href=\"https://mobx.js.org/index.html\">Mobx</a></li>\n<li><a href=\"https://codeburst.io/mobx-vs-redux-with-react-a-noobs-comparison-and-questions-382ba340be09\">Redux vs Mobx</a></li>\n</ol>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>在过去一年，越来越多的项目继续或者开始使用React和Redux开发，这是目前前端业内很普遍的一种前端项目解决方案，但是随着开发项目越来越多，越来越多样化时，个人又有了不同的感受和想法。是不是因为已经有了一个比较普遍的，熟悉的项目技术栈，我们就一直完全沿用呢，有没有比他更适合的方案呢？恰逢团队最近有一个新项目，于是博主开始思考，有没有可能使用其他可替代技术开发呢？既能提高开发效率，又能拓展技术储备和眼界，经过调研，选择了Mobx，最终使用React+Mobx搭建了新项目，本篇总结分享从技术选型到项目实现的较完整过程，希望共同进步。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                72
+            ],
+            "tags": [
+                202,
+                73,
+                175,
+                203
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/979"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=979"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/979/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=979"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=979"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=979"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 961,
+            "date": "2018-01-06T15:59:00",
+            "date_gmt": "2018-01-06T07:59:00",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=961"
+            },
+            "modified": "2018-01-06T18:01:44",
+            "modified_gmt": "2018-01-06T10:01:44",
+            "slug": "responsive-web-design",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2018/01/06/responsive-web-design/",
+            "title": {
+                "rendered": "浅谈响应式Web设计与实现思路"
+            },
+            "content": {
+                "rendered": "<p>是否还在为你的应用程序适配PC端，移动端，平板而苦苦思索呢，是否在寻找如何一套代码适配多终端方式呢，是否希望快速上手实现你的跨终端应用程序呢，是的话，那就看过来吧，本文阐述响应式UI设计相关理论基础，包括：屏幕尺寸，物理，设备独立，CSS像素，dpr，视口等相关概念，还有响应式设计基础，常见设计模式，及响应式UI实现基本思路，希望能加深对响应式的理解和实践思路。</p>\n<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#Responsive\"><span class=\"toc_number toc_depth_1\">1</span> 响应式（Responsive）</a><ul><li><a href=\"#Adaptive\"><span class=\"toc_number toc_depth_2\">1.1</span> 自适应（Adaptive）</a></li><li><a href=\"#vs\"><span class=\"toc_number toc_depth_2\">1.2</span> 自适应vs响应式</a></li><li><a href=\"#Mobile_first\"><span class=\"toc_number toc_depth_2\">1.3</span> 移动优先（Mobile first）</a></li><li><a href=\"#Progress_enhancement\"><span class=\"toc_number toc_depth_2\">1.4</span> 渐进增强（Progress enhancement）</a></li></ul></li><li><a href=\"#screen\"><span class=\"toc_number toc_depth_1\">2</span> 屏幕（screen）</a><ul><li><a href=\"#Display_size_Physical_size\"><span class=\"toc_number toc_depth_2\">2.1</span> 物理尺寸（Display size ／Physical size）</a></li><li><a href=\"#Logic_size_Display_resolution\"><span class=\"toc_number toc_depth_2\">2.2</span> 逻辑尺寸（Logic size ／Display resolution）</a><ul><li><a href=\"#Dimension\"><span class=\"toc_number toc_depth_3\">2.2.1</span> Dimension</a></li></ul></li><li><a href=\"#device_pixel\"><span class=\"toc_number toc_depth_2\">2.3</span> 物理像素（device pixel）</a></li><li><a href=\"#CSSCSS_Pixel\"><span class=\"toc_number toc_depth_2\">2.4</span> CSS像素（CSS Pixel）</a></li><li><a href=\"#resolution\"><span class=\"toc_number toc_depth_2\">2.5</span> 分辨率（resolution）</a></li><li><a href=\"#Pixel_density\"><span class=\"toc_number toc_depth_2\">2.6</span> 像素密度（Pixel density）</a><ul><li><a href=\"#i\"><span class=\"toc_number toc_depth_3\">2.6.1</span> 分辨率转换为像素密度</a></li><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_3\">2.6.2</span> 密度等级划分</a></li><li><a href=\"#dots_per_inch\"><span class=\"toc_number toc_depth_3\">2.6.3</span> 点密度（dots per inch）</a></li></ul></li><li><a href=\"#dpdip\"><span class=\"toc_number toc_depth_2\">2.7</span> 设备独立像素（dp／dip）</a><ul><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_3\">2.7.1</span> 计算设备独立像素</a></li></ul></li><li><a href=\"#dpr\"><span class=\"toc_number toc_depth_2\">2.8</span> 设备像素比（dpr）</a></li><li><a href=\"#CSS\"><span class=\"toc_number toc_depth_2\">2.9</span> 设备独立像素与CSS像素</a></li><li><a href=\"#UIUI_Dimension\"><span class=\"toc_number toc_depth_2\">2.10</span> UI度量（UI Dimension）</a><ul><li><a href=\"#in\"><span class=\"toc_number toc_depth_3\">2.10.1</span> 英寸（in）</a></li><li><a href=\"#UIpx\"><span class=\"toc_number toc_depth_3\">2.10.2</span> UI像素（px）</a></li><li><a href=\"#pt\"><span class=\"toc_number toc_depth_3\">2.10.3</span> 磅（pt）</a></li><li><a href=\"#pxpt\"><span class=\"toc_number toc_depth_3\">2.10.4</span> px与pt</a></li><li><a href=\"#em\"><span class=\"toc_number toc_depth_3\">2.10.5</span> em</a></li><li><a href=\"#rem\"><span class=\"toc_number toc_depth_3\">2.10.6</span> rem</a></li><li><a href=\"#i-4\"><span class=\"toc_number toc_depth_3\">2.10.7</span> 百分比（%）</a></li></ul></li></ul></li><li><a href=\"#viewport\"><span class=\"toc_number toc_depth_1\">3</span> 视口（viewport）</a><ul><li><a href=\"#i-5\"><span class=\"toc_number toc_depth_2\">3.1</span> 视口类型</a><ul><li><a href=\"#visual_viewport\"><span class=\"toc_number toc_depth_3\">3.1.1</span> 视觉视口（visual viewport）</a></li><li><a href=\"#layout_viewport\"><span class=\"toc_number toc_depth_3\">3.1.2</span> 布局视口（layout viewport）</a></li><li><a href=\"#ideal_viewport\"><span class=\"toc_number toc_depth_3\">3.1.3</span> 理想视口（ideal viewport）</a></li></ul></li><li><a href=\"#viewport_meta\"><span class=\"toc_number toc_depth_2\">3.2</span> viewport meta</a></li><li><a href=\"#i-6\"><span class=\"toc_number toc_depth_2\">3.3</span> 视口与布局</a><ul><li><a href=\"#i-7\"><span class=\"toc_number toc_depth_3\">3.3.1</span> 默认布局视口</a></li><li><a href=\"#meta\"><span class=\"toc_number toc_depth_3\">3.3.2</span> 添加meta</a></li></ul></li></ul></li><li><a href=\"#CSS3_media_query\"><span class=\"toc_number toc_depth_1\">4</span> CSS3 媒体查询（media query）</a></li><li><a href=\"#i-8\"><span class=\"toc_number toc_depth_1\">5</span> 响应式实现基础</a></li><li><a href=\"#i-9\"><span class=\"toc_number toc_depth_1\">6</span> 响应式设计模式</a><ul><li><a href=\"#Tiny_Tweaks\"><span class=\"toc_number toc_depth_2\">6.1</span> 微调式（Tiny Tweaks）</a></li><li><a href=\"#Mostly_Fluid\"><span class=\"toc_number toc_depth_2\">6.2</span> 浮动式（Mostly Fluid）</a></li><li><a href=\"#Column_Drop\"><span class=\"toc_number toc_depth_2\">6.3</span> 断列式（Column Drop）</a></li><li><a href=\"#Layout_Shifter\"><span class=\"toc_number toc_depth_2\">6.4</span> 移位式（Layout Shifter）</a></li><li><a href=\"#Off_Canvas\"><span class=\"toc_number toc_depth_2\">6.5</span> 分屏式（Off Canvas）</a></li></ul></li><li><a href=\"#i-10\"><span class=\"toc_number toc_depth_1\">7</span> 响应式实现</a><ul><li><a href=\"#i-11\"><span class=\"toc_number toc_depth_2\">7.1</span> 设置视口</a></li><li><a href=\"#i-12\"><span class=\"toc_number toc_depth_2\">7.2</span> 媒体查询</a></li><li><a href=\"#breakpoints\"><span class=\"toc_number toc_depth_2\">7.3</span> 设置断点（breakpoints）</a></li><li><a href=\"#i-13\"><span class=\"toc_number toc_depth_2\">7.4</span> 相对单位</a></li><li><a href=\"#i-14\"><span class=\"toc_number toc_depth_2\">7.5</span> 响应式文本</a></li><li><a href=\"#i-15\"><span class=\"toc_number toc_depth_2\">7.6</span> 响应式图片</a><ul><li><a href=\"#i-16\"><span class=\"toc_number toc_depth_3\">7.6.1</span> 弹性图片布局</a></li><li><a href=\"#i-17\"><span class=\"toc_number toc_depth_3\">7.6.2</span> 图片响应式</a><ul><li><a href=\"#srcset\"><span class=\"toc_number toc_depth_4\">7.6.2.1</span> srcset</a></li></ul></li><li><a href=\"#picture\"><span class=\"toc_number toc_depth_3\">7.6.3</span> 艺术方向（picture）</a></li></ul></li></ul></li><li><a href=\"#i-18\"><span class=\"toc_number toc_depth_1\">8</span> 总结</a></li><li><a href=\"#i-19\"><span class=\"toc_number toc_depth_1\">9</span> 参考</a></li></ul></div>\n<h2><span id=\"Responsive\">响应式（Responsive）</span></h2>\n<p>响应式是什么呢？顾名思义，响应式，肯定会自动响应，响应什么？应用程序是在终端屏幕窗口中展示给用户，被用户访问的，那么就是响应屏幕的变化，不同终端屏幕尺寸大小不一致，需要针对不同尺寸屏幕进行不同的展示响应。</p>\n<blockquote>\n<p><strong>响应式（Responsive web design, RWD）</strong>，是指一套应用程序用户界面（User Interface）能自动响应不同设备窗口或屏幕尺寸（screen size）并且内容，布局渲染表现良好。</p>\n</blockquote>\n<h3><span id=\"Adaptive\">自适应（Adaptive）</span></h3>\n<p>在响应式设计（RWD）之外，还有一种适配多设备屏幕的方式，<strong>自适应设计（Adaptive web design， AWD）</strong>。</p>\n<blockquote>\n<p>自适应设计(AWD)，是指一个应用程序使用多版本用户界面，针对不同设备屏幕，服务器端返回不同版本用户界面，供用户访问。</p>\n</blockquote>\n<h3><span id=\"vs\">自适应vs响应式</span></h3>\n<p>自适应和响应式设计的不同主要概括如下：</p>\n<ol>\n<li>自适应是多套用户界面，而后者则只有一套用户界面；</li>\n<li>自适应需要服务端检测请求设备分辨率相关信息，然后选择对应版本返回；</li>\n<li>自适应可以在不同版本使用不同适配方案，如在PC端使用百分比，在移动端使用rem等，而响应式则需要一个完美兼容的适配方案；</li>\n<li>以头条网站为例，访问<code>www.toutiao.com</code>PC端会打开PC版本web应用，而在移动端打开，则服务端会重定向至<code>m.toutiao.com</code>，对应的返回的就是移动端版本web应用；</li>\n</ol>\n<p>自然的，我们本篇要关注的自然是响应式用户界面设计，即一套应用程序适配多设备。</p>\n<h3><span id=\"Mobile_first\">移动优先（Mobile first）</span></h3>\n<p>从2014年开始，移动设备使用访问率已经超过PC，所以在设计响应式页面程序时，通常都是移动优先，即先适配移动样式和布局，然后再调整适配PC端。</p>\n<h3><span id=\"Progress_enhancement\">渐进增强（Progress enhancement）</span></h3>\n<p>另外我们知道移动设备众多，一些低版本或旧系统的设备并不支持JavaScript或CSS的新特性，如es6，media query等，所以通常实现一个基础版本，在大部分设备能满足基本功能后，针对性兼容的添加新功能，新特性，逐步拓展应用，这就是渐进增强。</p>\n<h2><span id=\"screen\">屏幕（screen）</span></h2>\n<p>前面讲响应式就是响应屏幕尺寸，那么屏幕尺寸如何衡量呢？主要从尺寸单位，设备独立像素和像素密度等角度考虑。</p>\n<h3><span id=\"Display_size_Physical_size\">物理尺寸（Display size ／Physical size）</span></h3>\n<p>屏幕物理尺寸，指根据屏幕对角线（diagonal）测量的实际物理尺寸，就像我们通常说的屏幕是多少寸的，是5.1还是5.5，平板是10.1，电视是42还是37寸，这里的寸都指（英寸），而且是以对角线长度计量的。</p>\n<p>对角线长度，则可以根据三角公式，由宽和高计算得出：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/physical-screen-size.png\" alt=\"Physical-screen-size\" /></p>\n<h3><span id=\"Logic_size_Display_resolution\">逻辑尺寸（Logic size ／Display resolution）</span></h3>\n<p>和屏幕物理尺寸相对的则有逻辑尺寸概念，或者叫它展示分辨率（resolution），而和物理尺寸以长度inch为单位不同，逻辑尺寸则以像素（pixel）为单位计量。</p>\n<h4><span id=\"Dimension\">Dimension</span></h4>\n<p>和物理尺寸以对角线为方向计量屏幕大小不同的是，逻辑尺寸分别从横向（宽），纵向（高）两个方向表示屏幕的尺寸：width，height。以一台<code>“1024 × 768”</code>分辨率的笔记本为例，这表示设备屏幕的宽是1024像素，高为768像素。</p>\n<h3><span id=\"device_pixel\">物理像素（device pixel）</span></h3>\n<p>物理像素，也叫<strong>设备像素</strong>，<strong>实际像素</strong>，在计算机数字图像中，一个像素（pixel）或一个点（dot）是在一个光栅图片（raster image）中的一个物理点，它是图像在屏幕上展示的的最小可控制元素。</p>\n<blockquote>\n<p>所谓的光栅（raster image）或位图（bitmapped image）图片，是指将图像定义为由点（或像素）组成，每个点（或像素）可以由多种色彩表示，包括2、4、8、16、24和32位色彩。例如，一幅1024×768分辨率的32位彩色图片，其所占存储字节数为：<code>1024×768×32/(8*1024)=3072KB</code>(一字节等于8位)。</p>\n</blockquote>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/intro-pixel-example.png\" alt=\"BitMapped Image\" /></p>\n<p>如图，将屏幕放大至一定程度，可以看见是由很多个点（或像素）组成，屏幕上的这些一个一个的点（或像素）就是我们说的<strong>物理像素</strong>，而像素数量的不同及每个像素的不同色彩表示就构成图像展示，决定它的视觉表现。</p>\n<h3><span id=\"CSSCSS_Pixel\">CSS像素（CSS Pixel）</span></h3>\n<p>除了前面介绍的物理像素，还有一种像素经常被提及，那就是CSS像素，也作<strong>逻辑像素</strong>，<strong>虚拟像素</strong>，它仅仅是描述图像单元信息的概念，通常描述图像中某一个小方框所需要展示的颜色值，而这一些列方框点合起来就能描述一幅图像，web编程中用来度量网页内容尺寸或位置的就是这个<strong>抽象单位</strong>。</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/logical-pixel.png\" alt=\"logical pixel\" /></p>\n<h3><span id=\"resolution\">分辨率（resolution）</span></h3>\n<p>分辨率通厂都是指设备分辨率，即设备屏幕上显示的物理像素总和，以一台<code>“1024 × 768”</code>分辨率的笔记本为例，这表示设备屏幕的宽是1024物理像素，高为768物理像素，它展示的像素总数就是<code>1024*768</code>。</p>\n<h3><span id=\"Pixel_density\">像素密度（Pixel density）</span></h3>\n<p>屏幕上每英寸（PPI，Pixel per inch）或每厘米（PPCM，Pixel per centimeter）上拥有的<strong>物理像素</strong>（或点）的数量，称为<strong>像素密度</strong>，也作<strong>屏幕密度</strong>，计算公式为：</p>\n<pre><code class=\"javascript\">pixel density(pd) =  屏幕宽度物理像素 ／ 屏幕宽度英寸；\n</code></pre>\n<p>如一个15英寸（对角线）大小的设备，有一个12英寸宽，9英寸高的屏幕，并且其分辨率为<code>1024*768</code>像素，则其像素密度则大概为85PPI：</p>\n<pre><code class=\"javascript\">pd = 1024 ／ 12 ～= 768 ／ 9 ～= 85PPI\n</code></pre>\n<p>当然横纵方向上的像素密度并不总是相同的，如将上面例子的分辨率改为<code>1280×1024</code>，则：</p>\n<ol>\n<li>横向：<code>pd = 1280 / 12 ~=107PPI</code>;</li>\n<li>纵向：<code>pd = 1024 / 9 ~= 114PPI</code>;</li>\n</ol>\n<h4><span id=\"i\">分辨率转换为像素密度</span></h4>\n<p>根据屏幕分辨率计算得出像素密度公式，如：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/resolution-to-px.png\" alt=\"Resolution to px\" /></p>\n<ol>\n<li><code>w&lt;sub&gt;p&lt;/sub&gt;</code>：分辨率横向像素数；</li>\n<li><code>h&lt;sub&gt;p&lt;/sub&gt;</code>：分辨率纵向像素数；</li>\n<li><code>d&lt;sub&gt;p&lt;/sub&gt;</code>：对角线分辨率像素数；</li>\n<li><code>di</code>：对角线物理尺寸（inch）；</li>\n<li><code>V&lt;sub&gt;pd&lt;/sub&gt;</code>：像素密度，单位为PPI；</li>\n</ol>\n<h4><span id=\"i-2\">密度等级划分</span></h4>\n<p>为简便起见，Android 将所有屏幕密度分组为六种通用密度： 低、中、高、超高、超超高和超超超高。而低密度屏幕在给定物理区域的物理像素少于高密度屏幕。</p>\n<h4><span id=\"dots_per_inch\">点密度（dots per inch）</span></h4>\n<p>另外我们可能还听过点密度（dots per inch，dpi），它和前面介绍的像素密度相似，通常可以交叉使用，只是描述领域不同，像素（pixel）通常在计算机视觉显示领域使用，而点（dot）则主要在打印或印刷领域中使用。</p>\n<h3><span id=\"dpdip\">设备独立像素（dp／dip）</span></h3>\n<p>设备独立像素（device independent pixel，称为dp或dip），也叫<strong>密度无关像素</strong>，是基于屏幕物理密度的抽象单位。首先由Google提出适配众多Android设备屏幕的抽象单位。在定义 UI 布局时可以使用的<strong>虚拟像素</strong>单位，表示布局维度或位置。</p>\n<blockquote>\n<p>它是一个基于计算机坐标系统的物理度量单位，并且可以将物理像素抽象为<strong>虚拟像素</strong>以便在应用中使用，然后计算机内部系统可以将应用中使用的虚拟像素转换为<strong>实际物理像素</strong>。</p>\n</blockquote>\n<p>这中抽象使得移动设备可以在不同屏幕缩放展示信息和用户交互界面，而内部图像系统可以将应用中的抽象像素度量转换为实际像素度量，因此应用可以直接使用抽象像素，而不用编码处理大量的物理像素差异化的设备。通常，安卓设备假设“中等”密度屏幕设备独立像素基准为：</p>\n<pre><code>一个设备独立像素（dp／dip）等于160 dpi（或PPI） 屏幕上的一个物理像素，即等于1 / 160英寸。\n</code></pre>\n<p>而windows则定义一个设备独立像素为96dpi屏幕上的一个物理像素，即1dp等于1 ／ 96英寸；Apple系统则默认一个设备独立像素为72dpi屏幕上的一个物理像素。系统运行时，根据当前屏幕的实际密度以透明方式处理 dp 单位的任何缩放 。</p>\n<h4><span id=\"i-3\">计算设备独立像素</span></h4>\n<p>如何计算某一设备的设备独立像素呢？根据上面介绍可以得到dp和inch的如下等式：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/dp-inch.png\" alt=\"Dp to inch\" /></p>\n<ol>\n<li><code>*ratio*</code>：即设备系统指定的默认比例;</li>\n<li><code>inch</code>：物理尺寸，英寸；</li>\n</ol>\n<p>所以可以得到dp和物理像素的转换关系：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/dp-px.png\" alt=\"Dp to Physical px\" /></p>\n<ol>\n<li><code>V&lt;sub&gt;pd&lt;/sub&gt;</code>：设备像素密度；</li>\n<li><code>PPI*inch</code>：<code>pixel/inch * inch = pixel</code>;</li>\n</ol>\n<p>如，当屏幕密度为240dpi（或PPI），即<code>V&lt;sub&gt;pd&lt;/sub&gt; = 240</code>时，1 dip 则等于1.5个物理像素（pixel）。</p>\n<h3><span id=\"dpr\">设备像素比（dpr）</span></h3>\n<p>关于物理像素，设备独立像素或CSS像素，有一个很常见的概念，设备像素比（device pixel ratio，dpr），它描述的是使用多少实际像素渲染一个设备独立像素，它的计算方式为：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/dpr.png\" alt=\"Dpr\" /></p>\n<ol>\n<li><code>N&lt;sub&gt;dp&lt;/sub&gt;</code>: 设备屏幕实际像素数；</li>\n<li><code>N&lt;sub&gt;px&lt;/sub&gt;</code>: 屏幕设备独立像素数（PC端通常等于CSS像素数）；</li>\n<li><code>dpr</code>：设备像素比；</li>\n</ol>\n<p>在浏览器中，我们可以使用<code>window.devicePixelRatio</code>获取其dpr值，dpr更高的设备屏幕会使用更多物理像素展示一个设备独立像素，所以其效果更细腻，更精致。如在一个dpr=2的设备上，1个设备独立像素需要使用4个物理像素展示，因为宽高各为2倍。</p>\n<h3><span id=\"CSS\">设备独立像素与CSS像素</span></h3>\n<p>上一小节介绍的设备像素比（dpr），通常指物理像素和设备独立像素的比例，我们知道，CSS像素最终是需要转换为物理像素展示的，那么CSS像素如何对应物理像素呢？</p>\n<ol>\n<li>根据前文设备独立像素小节所介绍，在具体设备上，设备独立像素与物理像素的比例是固定的；</li>\n<li>在PC端，通常设备独立像素和CSS像素比例是1:1，CSS像素能以正常比例转换为物理像素展示；</li>\n<li>在移动端，为了更好的展现页面，默认情况下会进行缩放，这时设备独立像素和CSS像素比例并不是1:1，所以CSS像素与物理像素的比例就变了，所以我们看到的效果就变了；</li>\n<li>当我们使用viewport meta明确设置视口<code>width</code>为理想视口时，视口宽度单位为设备独立像素，同时设置<code>intial-scale=1.0</code>即表明将CSS像素和设备独立像素比例设置为1.0，那么CSS像素到物理像素的转换就能很好的展现我们的UI了。</li>\n</ol>\n<h3><span id=\"UIUI_Dimension\">UI度量（UI Dimension）</span></h3>\n<p>计量屏幕或屏幕内某一区域大小时，我们可以说长，宽多少寸，但是寸只是一个物理长度概念，而在开发UI界面时，由于需要适配诸多不同设备，所以可衡量，可比较的UI度量则需要使用数字加抽象计量单位，我们可以称之为UI维度（UI Dimension）。</p>\n<blockquote>\n<p>A dimension is specified with a number followed by a unit of measure</p>\n<p>维度使用一个数字加上一个度量单位声明，如100px，10pt，10in，10dp等。</p>\n</blockquote>\n<h4><span id=\"in\">英寸（in）</span></h4>\n<p>Inches &#8211; Based on the physical size of the screen.</p>\n<p>基于屏幕物理尺寸的度量单位，<code>in</code>。</p>\n<h4><span id=\"UIpx\">UI像素（px）</span></h4>\n<p>UI像素px，是一个相对单位，与之相对的是设备像素（device pixels）。一个px在不同设备上可能对应不同的物理像素数或（点），这取决于设备像素比（device pixel ratio）。开发页面时，经常使用该单位定义UI的布局和内容尺寸，文字大小，可以在浏览器中实现像素展示良好的UI界面。</p>\n<p>但是由于不同设备上使用px单位时不会根据设备屏幕大小进行自适应，尤其是PC和移动端差别比较大，所以一般响应式界面较少用px单位。</p>\n<h4><span id=\"pt\">磅（pt）</span></h4>\n<p>磅，pt，即point，是印刷行业常用单位，等于1/72英寸，它是长度单位，是绝对大小，而px则是相对大小。</p>\n<h4><span id=\"pxpt\">px与pt</span></h4>\n<p>前面说了，px是相对大小，pt是绝对大小，所以在不同设备上，他们的关系可能不同，以Android设备为例，<code>一个dp等于160dpi屏幕上的一个物理像素</code>，则：</p>\n<pre><code>1dp = 1 ／ 160 inch\n</code></pre>\n<p>而结合前面介绍的pt单位：</p>\n<pre><code>1pt = 1 / 72 inch \n</code></pre>\n<p>对于240PPI的屏幕，则：</p>\n<ol>\n<li><code>1dp = 1 / 160 inch = 240 / 160 px = 1.5物理像素</code>；</li>\n<li><code>1px = 1 / 240 inch</code>；</li>\n<li><code>1pt = 0.35物理像素 = 0.35 / dpr CSS像素(px)</code>；</li>\n</ol>\n<h4><span id=\"em\">em</span></h4>\n<p>em是在web文档中使用的一个缩放单位，1em等于最近父元素的<code>font-size</code>字体尺寸，如最近父元素字体为14pt，则<code>1em=14pt</code>。使用em单位表示的尺寸可以较好的在多终端浏览器进行样式适配。</p>\n<h4><span id=\"rem\">rem</span></h4>\n<p>rem也是一个缩放单位，与em相似，都是基于字体尺寸，不同的是rem是基于文档根元素字体尺寸，而与父元素字体尺寸无关，如文档根元素<code>&lt;html&gt;</code>font-size属性为12pt，而最近父元素字体为14pt，则<code>1rem=12pt</code>。</p>\n<p>由于rem基于根元素字体大小计算，所以在文档中，任何一处使用rem单位计算基准都一样，使得尺寸计算得到统一，而前面的em则在文档中都是基于最近父元素<code>font-size</code>属性值，这说明在<code>font-size</code>值不同的父元素中使用em单位，计算并不能统一，这也是为什么在目前的PC，移动端多设备适配方案中，rem比em更常见。</p>\n<h4><span id=\"i-4\">百分比（%）</span></h4>\n<p>还有一个%百分比单位，基于最近父元素的相关属性尺寸，乘以分配的百分比数，如父元素width为10pt，font-size：14pt，则width：10%就是1pt，font-size: 110%为15.4pt（浏览器实际渲染会化为整数渲染）。特别注意的是<code>margin,padding</code>属性值为百分比时，是基于当前元素width值的。</p>\n<p>%单位也是一个缩放单位，所以也常用于样式适配。</p>\n<h2><span id=\"viewport\">视口（viewport）</span></h2>\n<p>在实现响应式设计之前，我们还需要了解一些视口相关概念。</p>\n<p><strong>视口(viewport）</strong>，即可视区域的大小，指浏览器窗口内的内容区域，不包含工具栏、标签栏等，也就是网页实际显示的区域。</p>\n<h3><span id=\"i-5\">视口类型</span></h3>\n<p>在开发移动端wap应用时，为了开发体验更友好的界面，需要了解更多视口相关概念，通常将视口分为三种：视觉视口，布局视口，理想视口。</p>\n<h4><span id=\"visual_viewport\">视觉视口（visual viewport）</span></h4>\n<p>visual viewport定义如：</p>\n<blockquote>\n<p>The visual viewport is the part of the page that’s currently shown on screen. The user may scroll to change the part of the page he sees, or zoom to change the size of the visual viewport。</p>\n<p>视觉视口是指当前屏幕上页面的可见区域。用户可以滚动来改变当前页面可见部分，或者缩放来改变视觉视口的尺寸。</p>\n</blockquote>\n<p>visual viewport默认可以通过<code>window.innerWidth</code>来获取，另外用户可以通过缩放来改变visual viewport的尺寸，缩小时，visual viewport值变大，放大时，visual viewport值变小。</p>\n<p>在目前新的<a href=\"https://wicg.github.io/visual-viewport/index.html\">草案文档</a>中，已经定义了<code>window.visualViewport</code>API可以获取视觉窗口对象，在Chrome61以上即可访问：</p>\n<pre><code class=\"javascript\">console.log(window.visualViewport.width);\n</code></pre>\n<p><code>window.visualViewport</code>对象属性如：</p>\n<table>\n<thead>\n<tr>\n<th><code>visualViewport</code> 属性</th>\n<th>说明</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td><code>offsetLeft</code></td>\n<td>视觉视口与布局视口左边界的间距以CSS pixels表示；</td>\n</tr>\n<tr>\n<td><code>offsetTop</code></td>\n<td>视觉视口与布局视口上边界的间距以CSS pixels表示；</td>\n</tr>\n<tr>\n<td><code>pageLeft</code></td>\n<td>视觉视口左边界和文档左边线的偏移距离，以CSS pixels表示；</td>\n</tr>\n<tr>\n<td><code>pageTop</code></td>\n<td>视觉视口上边界和文档上边线的偏移距离，以CSS pixels表示；</td>\n</tr>\n<tr>\n<td><code>width</code></td>\n<td>视觉视口的宽度，以CSS pixels表示；</td>\n</tr>\n<tr>\n<td><code>height</code></td>\n<td>视觉视口的高度，以CSS pixels表示；</td>\n</tr>\n<tr>\n<td><code>scale</code></td>\n<td>缩放比例，比如文档被放大2被，则返回值 <code>2</code>. 这个值不受设备像素比<code>devicePixelRatio</code>的影响。</td>\n</tr>\n</tbody>\n</table>\n<h4><span id=\"layout_viewport\">布局视口（layout viewport）</span></h4>\n<p>layout viewport的定义如下：</p>\n<blockquote>\n<p>In the CSS layout, especially percentual widths, are calculated relative to the layout viewport, which is considerably wider than the visual viewport.</p>\n<p>在CSS布局中，比如百分比宽度是相对于布局视口来计算的，布局视口通常比视觉视口宽。</p>\n</blockquote>\n<p>layout viewport宽度可以通过<code>document.documenElement.clientWidth</code>或<code>document.body.clientWidth</code>来获取。</p>\n<p>为什么说布局视口通常比视觉视口宽呢，看图很容易理解：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/visual-layout-viewport.png\" alt=\"Visual VS Layout Viewport\" /></p>\n<p><strong>当给定文档内容宽度大于视觉窗口宽度时，会出现如图情况，视觉视口就是屏幕内文档可见区域，而布局视口则包括文档不可见区域，只有滚动才能查看其内容。</strong></p>\n<p>通常浏览器默认设置布局视口为<strong>980px或1024px</strong>，所以通常你会看到它大于设备屏幕可视区域，尤其是在移动设备上，另外从上面给的多种实例图片可以看出顶部<code>position:fixed</code>导航栏，始终跟随布局视口，<code>width: 100%</code>对应的是布局视口宽度。</p>\n<h4><span id=\"ideal_viewport\">理想视口（ideal viewport）</span></h4>\n<blockquote>\n<p>理想视口，是指设备的屏幕尺寸，单位为设备独立像素（虚拟像素，实际会被转换为物理像素展示）。</p>\n</blockquote>\n<p>ideal viewport宽度可以使用<code>screen.width</code>来获取，其值是由设备决定，是对设备来说最理想的布局视口尺寸。如，iphone5理想视口为<code>320</code>，iphone6为<code>375</code>，IPhone7plus为<code>414</code>。</p>\n<p><strong>这里设置视口为设备独立像素，那如何与UI使用的CSS像素匹配呢？首先设备独立像素和物理像素的比例在具体某台设备上是固定的，然后我们知道设备独立像素和CSS像素都是虚拟单位，在PC端，通常设备独立像素和CSS像素比例是1:1，CSS像素能以正常比例转换为物理像素展示；但是在移动端，为了更好的展现页面，默认情况下会进行缩放将内容调整为适合屏幕的大小，这时设备独立像素和CSS像素比例并不是1:1，所以CSS像素与物理像素的比例就变了，所以我们看到的效果就变了，当我们使用viewport meta明确设置视口width为理想视口时，视口宽度单位为设备独立像素，同时设置intial-scale=1.0即表明将CSS像素和设备独立像素比例设置为1.0，那么CSS像素到物理像素的转换就能很好的展现我们的UI了。</strong></p>\n<h3><span id=\"viewport_meta\">viewport meta</span></h3>\n<p>在现在的移动端网页中，我们经常可以看到这么一句代码：</p>\n<pre><code class=\"html\"> &lt;meta name=\"viewport\", width=device-width, initial-scale=1.0&gt;\n</code></pre>\n<p><code>device-width</code>返回的就是设备的<code>ideal viewport</code>宽度，这句代码就是声明当前布局使用设备理想视口宽度，在这种情况下，以iphone6理想视口为<code>375</code>为例，html设置<code>width: 100%</code>，最终得到的宽度就是<code>320px</code>。</p>\n<p>对于未设置<code>meta</code>元视口代码的页面，在移动端访问时，布局视口为默认值<code>980px</code>，文档被缩小以完全展示内容，此时CSS像素与物理像素的比例变大，即一物理像素展示更多CSS像素，展示效果如图：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/mobile-blog-ui.png\" alt=\"blog ui\" /></p>\n<p>此时<code>visualViewport</code>对象信息如下：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/visual-viewport-object.png\" alt=\"visualViewport\" /></p>\n<h3><span id=\"i-6\">视口与布局</span></h3>\n<p>在iphone之前，都是通过调整内容，适配PC端网站使其在手机浏览器上也可以友好访问；后来iphone提出在“虚拟窗口”（视口）上展现网页内容，并提供viewport元信息元素以控制虚拟窗口大小。</p>\n<p>在桌面浏览器中，浏览器窗口宽度就是我们CSS布局时，能使用的最大宽度，如果内容宽度超出视口宽度，则会出现滚动条，以查看所有内容；在移动浏览器中则不同，我们可以额外使用viewport控制视口以满足展示需求。</p>\n<h4><span id=\"i-7\">默认布局视口</span></h4>\n<p>如下对于一个PC网站，PC端正常展示如下：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/pc-blog-ui.png\" alt=\"PC Blog\" /></p>\n<p>而在移动端默认情况下，展示如图：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/mobile-blog-ui.png\" alt=\"Mobile Blog\" /></p>\n<ol>\n<li>\n<p>我们给文档html，body宽度设置为<code>width:100%</code>，所以html，body的宽度是<code>980px</code>，这是<strong>浏览器默认设置的布局视口宽度</strong>；</p>\n</li>\n<li>\n<p>默认，移动端浏览器布局视口为980px，然后根据页面内容进行<strong>缩放</strong>以使页面内容能在当前可视窗口完全展示；当明确设置宽度width时：</p>\n<ol>\n<li>\n<p>若width大于980：我们设置html等元素<code>width: 1200px</code>后，视口将缩小布局以支持更多CSS像素，即一个物理像素将对应更多CSS像素，视觉上看就是页面被缩小了，这也验证了CSS像素只是一个虚拟像素；</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/mobile-1200-width.png\" alt=\"Mobile 1200 px\" /></p>\n</li>\n<li>\n<p>若width小于980：我们设置html等元素<code>width: 400px</code>后，内容在视口的一部分展示，剩余部分空白，视觉上并没有被缩放，只是在更小的区域展示，导致文本换行，高度增加；</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/mobile-400-width.png\" alt=\"Mobile 400px\" /></p>\n</li>\n</ol>\n</li>\n</ol>\n<p><em>比较特殊的是<code>position:fixed;</code>定位的顶部导航栏元素，其始终对应于布局视口。</em></p>\n<h4><span id=\"meta\">添加meta</span></h4>\n<p>加入给页面添加元视口代码：</p>\n<pre><code class=\"html\">&lt;meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0&gt;\n</code></pre>\n<p>添加如上代码后，明确设置布局视口为理想视口宽度，这样浏览器就能完美展示我们的页面，页面也不会被缩放处理。当然，我们设置元素样式时，其宽度便不能超过该布局视口宽度，对于iphone6，为<code>375px</code>；如果超出则会出现滚动条。</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/blog-viewport-device-width.png\" alt=\"device-width\" /></p>\n<h2> </h2>\n<h2><span id=\"CSS3_media_query\">CSS3 媒体查询（media query）</span></h2>\n<p>CSS3 中的 Media Queries 增加了更多的媒体查询，就像if条件表达式一样，我们可以设置不同类型的媒体条件，并根据对应的条件，给相应符合条件的媒体调用相对应的样式表。如：</p>\n<ol>\n<li>\n<p>视口宽度大于 800px 的纵向显示屏，加载特定css文件：</p>\n<pre><code class=\"html\">&lt;link rel=\"stylesheet\" media=\"screen and (orientation: portrait) and (min-width:\n800px)\" href=\"800wide-portrait-screen.css\" /&gt;\n</code></pre>\n</li>\n<li>\n<p>打印设备特定css文件：</p>\n<pre><code class=\"html\">&lt;link rel=\"stylesheet\" type=\"text/css\" media=\"print\" href=\"print.css\" /&gt;\n</code></pre>\n</li>\n<li>\n<p>视口在375和600之间，设置特定字体大小18px：</p>\n<pre><code class=\"css\">@media screen (min-width: 375px) and (max-width: 600px) {\n body {\n   font-size: 18px;\n }\n}\n</code></pre>\n</li>\n</ol>\n<h2><span id=\"i-8\">响应式实现基础</span></h2>\n<p>响应式设计实现通常会从以下几方面思考：</p>\n<ol>\n<li>组合流式布局、弹性盒子（包括图片、表格、视频）和媒体查询等技术；</li>\n<li>使用百分比布局创建流式布局的弹性UI，同时使用媒体查询限制元素的尺寸和内容变更范围；</li>\n<li>使用相对单位使得内容自适应调节；</li>\n<li>选择断点，针对不同断点实现不同布局和内容展示；</li>\n</ol>\n<h2><span id=\"i-9\">响应式设计模式</span></h2>\n<p>目前，响应式设计实践大致可总结为五类：mostly fluid、column drop、layout shifter、tiny tweaks 和 off canvas，通常，我们选择其中的某一种或几种组合实现我们的响应式UI。</p>\n<h3><span id=\"Tiny_Tweaks\">微调式（Tiny Tweaks）</span></h3>\n<p>Tiny Tweaks布局模式主要表现为单一列展示大部分内容，随着视口宽的的增加，改变<code>font-size</code>值和<code>padding</code>间距，以保证内容的持续可读性。</p>\n<blockquote>\n<p>微调式针对单列布局，简单的修改字体大小，padding和margin间距，保证内容可读性。</p>\n</blockquote>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/tiny-tweaks-example.png\" alt=\"Tiny taeaks\" /></p>\n<pre><code class=\"css\">.c1 {\n  padding: 10px;\n  width: 100%;\n}\n\n@media (min-width: 600px) {\n  .c1 {\n    padding: 20px;\n    font-size: 1.5rem;\n  }\n}\n\n@media (min-width: 960px) {\n  .c1 {\n    padding: 40px;\n    font-size: 2rem;\n  }\n}\n</code></pre>\n<h3><span id=\"Mostly_Fluid\">浮动式（Mostly Fluid）</span></h3>\n<p>Mostly Fluid布局是一种多列布局，在大屏幕上设置较大<code>margin</code>，但是在移动端则会浮动后续列，垂直堆叠排列。该模式很常见，因为通常只需要设置一个断点。</p>\n<blockquote>\n<p>浮动式布局，精髓在于浮动，随着屏幕缩小，浮动后续列，通常float／flex + width然后使用media query设置不同width值实现。</p>\n</blockquote>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/mostly-fluid-example.png\" alt=\"Mostly fluid\" /></p>\n<p>以如下html结构为例：</p>\n<pre><code class=\"html\">&lt;!--Pattern HTML--&gt;\n&lt;div id=\"pattern\" class=\"pattern\"&gt;\n  &lt;div class=\"c\"&gt;\n    &lt;div class=\"main\"&gt;\n      &lt;h2&gt;Main Content (1st in source order)&lt;/h2&gt;\n      &lt;p&gt;1&lt;/p&gt;\n    &lt;/div&gt;\n    &lt;div class=\"c2\"&gt;\n      &lt;h3&gt;Column (2nd in source order)&lt;/h3&gt;\n      &lt;p&gt;3&lt;/p&gt;\n    &lt;/div&gt;\n    &lt;div class=\"c3\"&gt;\n      &lt;h3&gt;Column (3nd in source order)&lt;/h3&gt;\n      &lt;p&gt;4.&lt;/p&gt;\n    &lt;/div&gt;\n  &lt;/div&gt;\n&lt;/div&gt;\n&lt;!--End Pattern HTML--&gt;\n</code></pre>\n<p>其样式通常有如下方式：</p>\n<pre><code class=\"css\">.main {\n  background-color: #8e352e;\n}\n\n.c2 {\n  background-color: #c84c44;\n}\n\n.c3{\n  background-color: #a53d36;\n}\n\n@media screen and (min-width: 37.5em) {\n  .c2, .c3 {\n    float: left;\n    width: 50%;\n  }\n}\n</code></pre>\n<p>当屏幕宽度大于31.42em，浏览器默认font-size为16px，则为<code>37.5 * 16 = 600</code>px，大于600px像素时下面两个div则浮动并列显示，否则垂直堆叠展示。</p>\n<h3><span id=\"Column_Drop\">断列式（Column Drop）</span></h3>\n<p>Column Drop也是一种多列布局方式，在移动端垂直堆叠排列，随着屏幕增大将各列平铺排列，这种模式就需要我们选择多个断点并选择变化列。</p>\n<blockquote>\n<p>断列士核心是将内容划分为多列，然后随着屏幕变小，依次将左／右列断开堆叠至主列下方。</p>\n</blockquote>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/column-drop-example.png\" alt=\"Column drop\" /></p>\n<pre><code class=\"html\">&lt;!--Pattern HTML--&gt;\n  &lt;div id=\"pattern\" class=\"pattern\"&gt;\n    &lt;div class=\"c\"&gt;\n      &lt;div class=\"main\"&gt;\n        &lt;h2&gt;Main Content (1st in source order)&lt;/h2&gt;\n        &lt;p&gt;1&lt;/p&gt;\n      &lt;/div&gt;\n            &lt;div class=\"sb\"&gt;\n                &lt;h3&gt;Column (2nd in source order)&lt;/h3&gt;\n                &lt;p&gt;2&lt;/p&gt;\n            &lt;/div&gt;\n            &lt;div class=\"sb-2\"&gt;\n                &lt;h3&gt;Column (3nd in source order)&lt;/h3&gt;\n                &lt;p&gt;3&lt;/p&gt;\n\n            &lt;/div&gt;\n        &lt;/div&gt;\n    &lt;/div&gt;\n    &lt;!--End Pattern HTML--&gt;\n</code></pre>\n<p>样式如：</p>\n<pre><code class=\"css\">.main {\n  background-color: #8e352e;\n}\n\n.sb {\n  background-color: #c84c44;\n}\n\n.sb-2 {\n  background-color: #a53d36;\n}\n@media screen and (min-width: 42em) {\n  .main {\n    width: 75%;\n    float: left;\n    padding: 0 1em 0 0;\n  }\n  .sb {\n    float: left;\n    width: 25%;\n\n  }\n  .sb-2 {\n    clear: both;\n  }\n}\n@media screen and (min-width: 62em) {\n  .main {\n    width: 50%;\n    margin-left: 25%;\n    padding: 0 1em;\n  }\n  .sb {\n    margin-left: -75%;\n  }\n  .sb-2 {\n    float: right;\n    width: 25%;\n    clear: none;\n  }\n}\n</code></pre>\n<h3><span id=\"Layout_Shifter\">移位式（Layout Shifter）</span></h3>\n<p>Layout Shifter响应式设计是指针对不同屏幕进行不同布局和内容展示，通常需要设置多个断点，然后针对不同大小屏幕，进行不同设计，和前面几种模式在处理小屏幕时自动将后面列往下堆叠不同，在每类断点之间都需要涉及布局和内容两者的修改；这意味着我们需要做更多的编码工作，当然我们的可控性也更强。</p>\n<blockquote>\n<p>移位式核心在于确定不同屏幕需要何种布局及内容展示方式，然后在各断点使用media query进行控制。</p>\n</blockquote>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/layout-shifter-example.png\" alt=\"Layout Shifter\" /></p>\n<h3><span id=\"Off_Canvas\">分屏式（Off Canvas）</span></h3>\n<p>在这之前的四种设计思路都是在大屏铺开展示，然后随着屏幕缩小，将其余列垂直堆叠展示，用户需要上下滚动才能查看页面所有内容，而Off Canvas模式则换了一个思路：分屏：</p>\n<ol>\n<li>在小屏幕设备，将不常用或非主要的内容（如导航和菜单之类）放在屏幕外左右两侧，点击可以切换显示／隐藏；</li>\n<li>在大屏幕可选择性的铺开展示；</li>\n</ol>\n<blockquote>\n<p>分屏式精华是划分主要内容（如文章列表）和非主要内容（如导航栏），然后优先展示主要内容，非主要内容可以在左右两侧隐藏，支持用户主动点击／滑动切换显示／隐藏。</p>\n</blockquote>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/off-canvas-example.png\" alt=\"Off Canvas\" /></p>\n<p>通常的做法是，在小屏幕，设置不常用内容<code>display: none;</code>或<code>transform: translate(-200px, 0);</code>，然后点击打开按钮时，添加恢复样式<code>display: block;</code>或<code>transform: translate(0, 0);</code>，即可展示；在大屏幕则可选择性设计展示方式，通常是直接平铺。</p>\n<h2><span id=\"i-10\">响应式实现</span></h2>\n<p>理论知识基本准备的差不多了，接下来实现一个简单的例子。</p>\n<h3><span id=\"i-11\">设置视口</span></h3>\n<p>在html内添加元视口代码：</p>\n<pre><code class=\"html\">&lt;meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"&gt;\n</code></pre>\n<ol>\n<li><code>width=device-width</code> 指定视口为理想视口，以便使用当前视口（设备独立像素为单位）能展现良好的页面；</li>\n<li><code>initial-scale=1</code> 指定将 CSS 像素与设备独立像素比例设为 1:1。</li>\n</ol>\n<p><code>intial-scale=1.0</code> 即阻止移动浏览器自动调整页面大小 ，浏览器将按照视口的实际大小（此处设置为理想视口）来渲染页面。</p>\n<p>当然还可以通过CSS@viewport方式声明，与meta标签效果相同：</p>\n<pre><code class=\"css\">@viewport {\n  width: device-width;\n  zoom: 1;\n}\n</code></pre>\n<p><em>其中，zoom属性等同于 viewport meta 标签的 initial-sacale 属性。</em></p>\n<h3><span id=\"i-12\">媒体查询</span></h3>\n<p>当前各主流浏览器基本都支持meida query，但是如果你期望网站在IE8甚至以下版本也展示良好，则需要添加兼容，可以用 media-queries.js 或 respond.js：</p>\n<pre><code class=\"html\">&lt;!--[if lt IE 9]&gt;\n&lt;script src=\"//css3-mediaqueries-js.googlecode.com/svn/trunk/css3-mediaqueries.js\"&gt;&lt;/script&gt;\n&lt;![endif]--&gt;\n</code></pre>\n<h3><span id=\"breakpoints\">设置断点（breakpoints）</span></h3>\n<p>响应式设计还有一个重要的问题是如何确定视图断点，是以设备为依据吗？当然不行，设备是无穷无尽的，最好的实践是以内容为依据，然后从移动设备开始，从小到大依次增加一屏展示内容，确定我们期望的多个视图断点及布对应设计UI。</p>\n<p>以material-ui为例，分为：</p>\n<ol>\n<li><strong>xs</strong>, extra-small:  > 0</li>\n<li><strong>sm</strong>, small:  >= 600</li>\n<li><strong>md</strong>, medium:  >= 960</li>\n<li><strong>lg</strong>, large:  >= 1280</li>\n<li><strong>xl</strong>, xlarge: >= 1920</li>\n</ol>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/layout-adaptive-breakpoints-01.png\" alt=\"Breakpoints\" /></p>\n<p>可以自由选择断点并使用media query设置响应式布局，如：</p>\n<pre><code class=\"css\">/* for 1280px or less */\n@media screen and (max-width: 1280px) {\n  #pagewrap {\n    width: 95%;\n  }\n  #content {\n    width: 65%;\n  }\n  #sidebar {\n    width: 30%;\n  }\n}\n/* for 960px or less */\n@media screen and (max-width: 960px) {\n  #content {\n    width: auto;\n    float: none;\n  }\n  #sidebar {\n    width: auto;\n    float: none;\n  }\n}\n\n/* for 600px or less */\n@media screen and (max-width: 600px) {\n  h1 {\n    font-size: 0.8em;\n  }\n  #sidebar {\n    display: none;\n  }\n}\n</code></pre>\n<p>当然这并不意味着我们只能使用这几个断点，也许我们希望在特定情况下，进行一些特定处理：</p>\n<pre><code class=\"css\">@media (min-width: 360px) {\n  body {\n    font-size: 1rem;\n  }\n}\n</code></pre>\n<h3><span id=\"i-13\">相对单位</span></h3>\n<p>既然是响应式设计，需要实现响应式视图，那么固定值的长度单位就必然很难满足期望；如果使用固定单位，如<code>px</code>，则需要针对每一种情况进行不同处理，多了很多工作，否则就无法实现响应式。</p>\n<p>例如，给在容器div设置<code>width: 100%;</code>可以确保其填充视口宽度，相对视口而言不会太大也不会太小，无论设备是宽度为320像素的 iPhone5、宽度为375像素的iPhone6，还是宽度为360像素的 Nexus 5，div 均会适应于这些设备屏幕；此外，使用相对单位可以自动调整内容尺寸空间，而不会出现横向滚动条的情况。</p>\n<pre><code class=\"css\">.wrap {\n  width: 320px;\n  font-size: 20px;\n}\n// 相对单位\n.wrap {\n  width: 100%;\n  font-size: 1.25rem;\n}\n</code></pre>\n<p>相对单位有百分比（%），em，rem等。</p>\n<h3><span id=\"i-14\">响应式文本</span></h3>\n<p>针对网站可读性的调研发现，阅读体验友好段落行内应该包含 70 到 100 个字符，通常是8-15个英文单词，20-50个中文汉字，所以需要针对视图断点进行控制：</p>\n<pre><code class=\"css\">width: 100%;\npadding: 10px;\n@media screen (max-width: 600px) {\n  .article {\n    width: 100%;\n    papdding: 15px;\n    margin: 0 auto;\n    font-size: 1rem;\n  }\n}\n\n@media screen (min-width: 600px) and (max-width: 960px) {\n  .article {\n    max-width: 700px;\n    margin-left: 0 auto;\n  }\n}\n</code></pre>\n<p>如上，在较小的屏幕上，大小为1rem的字体可以使每行完美地呈现约20-30中文，而在较大的屏幕上就需要添加断点了，如，当浏览器宽度超过 600px，则内容理想宽度是100%，最大理想宽度是700px。</p>\n<h3><span id=\"i-15\">响应式图片</span></h3>\n<p>因为布局是响应式的，所以图片也需要根据布局进行响应式展现。</p>\n<h4><span id=\"i-16\">弹性图片布局</span></h4>\n<p>首先在布局上，我们的图片肯定需要随着布局变更而弹性变化，所以不能设置固定尺寸，通常使用相对单位，设置如下样式：</p>\n<pre><code class=\"css\">.img-wrap {\n  width: 100%;\n}\nimg { max-width: 100%; }\n</code></pre>\n<p>设置宽度100%，宽度自适应，不设置高度，图片高度将按照图片分辨率比例自适应，于是，图片便可以自动跟随容器缩放良好展现。</p>\n<p>同时我们也有必要为图片容器设置最大宽度，避免出现图片拉伸过大，损失质量的情况：</p>\n<pre><code class=\"css\">.img-wrap {\n  max-width: 200px;\n}\n</code></pre>\n<h4><span id=\"i-17\">图片响应式</span></h4>\n<p>是不是这样就结束了呢？当然不是，通常，PC端需要使用大尺寸图片展现，但是在移动端限于带宽和网络流量原因，必然不适合使用大尺寸图，图片内容也需要响应式，我们应该为不同的屏幕尺寸提供不同的图片，为大屏幕准备大尺寸图片，小屏幕准备尺寸更小的清晰图片，另外高分辨率 (2x, 3x) 显示屏上高分辨率图片可保证清晰度。</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2018/01/responsive-imgs.png\" alt=\"Responsive imgs\" /></p>\n<h5><span id=\"srcset\">srcset</span></h5>\n<p><code>srcset</code> 属性增强了 <code>img</code> 元素的行为，我们可以针对不同设备提供不同尺寸图片。类似于 CSS 原生的 <code>image-set</code> <a href=\"https://developers.google.com/web/fundamentals/design-and-ux/responsive/images#use-image-set-to-provide-high-res-images\">CSS 函数</a>，<code>srcset</code> 也允许浏览器自动根据设备特性选择最佳图像，例如，在 2x 显示屏上使用 2x 图像。</p>\n<pre><code class=\"html\">&lt;img src=\"photo.png\" srcset=\"photo@2x.png 2x\" /&gt;\n</code></pre>\n<p>在不支持 <code>srcset</code> 的浏览器上，浏览器需使用 <code>src</code> 属性指定的默认图像文件，所以需要始终包含一个在任何设备上都能显示的默认图像。如果 <code>srcset</code> 受支持，则会在进行任何请求之前对逗号分隔的图片条件列表进行解析，并且只会下载和显示默认图片。</p>\n<p>当然该方式目前兼容性实在不乐观，比较少使用。</p>\n<h4><span id=\"picture\">艺术方向（picture）</span></h4>\n<p>艺术方向是指使用 <code>picture</code> 元素，根据设备特性选择特定图像。 <code>picture</code> 元素支持声明式方式定义，根据设备大小、设备分辨率、屏幕方向等不同特性来提供一个图片的多尺寸版本：</p>\n<pre><code class=\"html\">&lt;picture&gt;\n  &lt;source media=\"(max-width: 599px)\" srcset=\"profile-s.png\"&gt;\n  &lt;source media=\"(min-width: 600px)\" srcset=\"profile-600w.png\"&gt;\n  &lt;img src=\"profile-600w.png\" alt=\"Progile\"&gt;\n&lt;/picture&gt;\n</code></pre>\n<ol>\n<li><code>picture</code>元素包含了<code>source</code>元素列表，浏览器可以根据当前设备特性选择特定源图片，然后需要声明一个<code>img</code>元素提供默认图片；</li>\n<li><code>&lt;source&gt;</code>元素包含一个<code>media</code>属性，该属性是一个媒体条件，根据这个条件决定显示哪张图片，从上至下，遇到匹配条件为真，则显示对应图片。在如上实例，若视口宽度不超过599px，则显示第一个<code>&lt;source&gt;</code>元素<code>srcset</code>指定的图片，若视窗宽度大于或等于600px，则显示第二张图片；</li>\n<li><code>srcset</code>属性包含要显示图片的路径。请注意，正如我们在<code>&lt;img&gt;</code>上面看到的那样，<code>&lt;source&gt;</code>可以使用引用多个图像的<code>srcset</code>属性，还有<code>sizes</code>属性。所以支持通过一个 <code>&lt;picture&gt;</code>元素提供多个图片，也可以给每个图片提供多分辨率的图片，不过通常需求比较少；</li>\n<li>最后一点需要注意的是，我们应该总是在 <code>&lt;/picture&gt;</code>前面提供一个<code>&lt;img&gt;</code>元素以及它的<code>src</code>和<code>alt</code>属性，否则不会有图片显示，并且当媒体条件都不匹配时，会加载<code>img</code>提供的图片，；另外，如果浏览器不支持 <code>&lt;picture&gt;</code>元素，也会默认使用该<code>img</code>元素替换；</li>\n</ol>\n<p>更多关于响应式图片信息可以查阅<a href=\"https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images\">参考资料</a>。</p>\n<h2><span id=\"i-18\">总结</span></h2>\n<p>本文主要介绍了响应式设计相关理论基础，包括：屏幕尺寸，物理，CSS像素等相关概念，视口，响应式设计基础，常见设计模式，及响应式UI实现基本思路等，目前最常见的多屏适配rem方式，博主计划后续继续介绍。</p>\n<h2><span id=\"i-19\">参考</span></h2>\n<ol>\n<li><a href=\"https://developer.mozilla.org/en-US/Apps/Progressive/Responsive/responsive_design_building_blocks\">Responsive Design</a></li>\n<li><a href=\"https://developers.google.com/web/fundamentals/design-and-ux/responsive/\">Respinsive Web Design</a></li>\n<li><a href=\"https://www.quirksmode.org/mobile/viewports.html\">A tale of two viewports</a></li>\n<li><a href=\"https://en.wikipedia.org/wiki/Display_size\">Display Size</a></li>\n<li><a href=\"https://developer.mozilla.org/en-US/docs/Mozilla/Mobile/Viewport_meta_tag\">Viewport Meta tag</a></li>\n</ol>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>是否还在为你的应用程序适配PC端，移动端，平板而苦苦思索呢，是否在寻找如何一套代码适配多终端方式呢，是否希望快速上手实现你的跨终端应用程序呢，是的话，那就看过来吧，本文阐述响应式UI设计相关理论基础，包括：屏幕尺寸，物理，设备独立，CSS像素，dpr，视口等相关概念，还有响应式设计基础，常见设计模式，及响应式UI实现基本思路，希望能加深对响应式的理解和实践思路。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                10
+            ],
+            "tags": [
+                201,
+                198,
+                199,
+                71,
+                200
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/961"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=961"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/961/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=961"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=961"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=961"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 937,
+            "date": "2017-12-31T19:05:08",
+            "date_gmt": "2017-12-31T11:05:08",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=937"
+            },
+            "modified": "2017-12-31T19:08:33",
+            "modified_gmt": "2017-12-31T11:08:33",
+            "slug": "2017-report",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2017/12/31/2017-report/",
+            "title": {
+                "rendered": "2017年终总结与来年展望"
+            },
+            "content": {
+                "rendered": "<p>不管怎么过，一天一天都会过去，我们能做的就是把握好，充实每一天。转眼也已经来到2017年尾，这一年来工作，学习，生活都有了新的变化，也有很多收获，当然也有一些不足，希望来年能朝着目标继续努力前进。</p>\n<h2>2017回顾</h2>\n<p>2017全年对于去年制定的目标完成度大概80%，有不如意的地方，也有一些突破点：</p>\n<ol>\n<li>全年完成33篇博客；</li>\n<li>写了一个Git系列博客，共计9篇；</li>\n<li>工作，学习中全面拥抱es6；</li>\n<li>主技术栈使用React，输出多篇React相关理论和实践，在Github开源，目前star数33：<a href=\"https://github.com/codingplayboy/reactjs\">React 学习与实践</a>；</li>\n<li>学习并实践搭建React Native项目架构，产出3篇介绍博客；</li>\n<li>且在12月创建Github开源项目，目前star数24：<a href=\"https://github.com/codingplayboy/react-blog\">React Blog</a>；</li>\n<li>个人订阅号开发能实现，菜单，消息回复等功能；</li>\n</ol>\n<p>前端自动化测试相关知识掌握太少，博客数量虽然差了几篇，但是质量，内容基本满足；在Github开源的项目有一些额外收获。</p>\n<p>这一年，除了自己的博客，也积极融入开源中国，知乎，掘金，开发者头条，推酷等平台：</p>\n<ol>\n<li>知乎：分享20篇文章，回答58个问题，收获512个关注，2K收藏，736赞同；</li>\n<li>开发者头条，前端后端独家号订阅者892；</li>\n<li>开源中国，收藏数上千；</li>\n<li>掘金，阅读3万+，收藏1585；</li>\n</ol>\n<p>来年继续在个人博客和各大平台耕耘，分享，交流。</p>\n<h2>2018展望</h2>\n<p>明天就是2018了，满怀期待，来年继续努力把握每一天，希望每一天越来越好，18年继续严于律己：</p>\n<ol>\n<li>博客持续更新，保持30-40篇；</li>\n<li>上线React版博客应用，且Github开源项目期待star数突破200；</li>\n<li>学习前端自动化测试，产出2-5篇博客；</li>\n<li>学习及实践React 服务端渲染SSR（Server Side Render）；</li>\n<li>尝试使用NodeJs／Python／Go + mongodb／mySql重写博客服务；</li>\n</ol>\n<p>最后，尤其感谢各读者和网友的支持，预祝大家新年快乐，在来年工作，学习，生活上都能有更大的收获和突破。</p>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>不管怎么过，一天一天都会过去，我们能做的就是把握好，充实每一天。转眼也已经来到2017年尾，这一年来工作，学习，生活都有了新的变化，也有很多收获，当然也有一些不足，希望来年能朝着目标继续努力前进。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                11
+            ],
+            "tags": [
+                126
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/937"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=937"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/937/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=937"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=937"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=937"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 932,
+            "date": "2017-12-30T09:33:15",
+            "date_gmt": "2017-12-30T01:33:15",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=932"
+            },
+            "modified": "2017-12-30T09:33:15",
+            "modified_gmt": "2017-12-30T01:33:15",
+            "slug": "react_app_structure",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2017/12/30/react_app_structure/",
+            "title": {
+                "rendered": "React应用架构设计"
+            },
+            "content": {
+                "rendered": "<p>在上一篇我们介绍了<a href=\"http://blog.codingplayboy.com/2017/12/18/webpack_react_project/\">Webpack自动化构建React应用</a>，我们的本地开发服务器可以较好的支持我们编写React应用，并且支持代码热更新。本节将开始详细分析如何搭建一个React应用架构。</p>\n<p><a href=\"https://github.com/codingplayboy/react-blog\">完整项目代码见github</a></p>\n<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#i\"><span class=\"toc_number toc_depth_1\">1</span> 前言</a></li><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_1\">2</span> 项目结构与技术栈</a><ul><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_2\">2.1</span> 技术栈</a></li></ul></li><li><a href=\"#i-4\"><span class=\"toc_number toc_depth_1\">3</span> 开发调试工具</a><ul><li><a href=\"#redux-devtools\"><span class=\"toc_number toc_depth_2\">3.1</span> redux-devtools</a></li><li><a href=\"#Reactotron\"><span class=\"toc_number toc_depth_2\">3.2</span> Reactotron</a></li></ul></li><li><a href=\"#i-5\"><span class=\"toc_number toc_depth_1\">4</span> 组件划分</a></li><li><a href=\"#Redux\"><span class=\"toc_number toc_depth_1\">5</span> Redux</a><ul><li><a href=\"#Redux_Middleware\"><span class=\"toc_number toc_depth_2\">5.1</span> 中间件（Redux Middleware）</a></li><li><a href=\"#Store_Enhancer\"><span class=\"toc_number toc_depth_2\">5.2</span> 增强器（Store Enhancer）</a></li><li><a href=\"#react-redux\"><span class=\"toc_number toc_depth_2\">5.3</span> react-redux</a></li><li><a href=\"#createStore\"><span class=\"toc_number toc_depth_2\">5.4</span> createStore</a></li><li><a href=\"#reduxImmutable\"><span class=\"toc_number toc_depth_2\">5.5</span> redux与Immutable</a></li></ul></li><li><a href=\"#React\"><span class=\"toc_number toc_depth_1\">6</span> React路由</a><ul><li><a href=\"#react-router\"><span class=\"toc_number toc_depth_2\">6.1</span> react-router</a></li><li><a href=\"#i-6\"><span class=\"toc_number toc_depth_2\">6.2</span> 动态路由与静态路由</a></li><li><a href=\"#react-router_v4x\"><span class=\"toc_number toc_depth_2\">6.3</span> react-router v4.x</a><ul><li><a href=\"#i-7\"><span class=\"toc_number toc_depth_3\">6.3.1</span> 路由钩子方法</a></li></ul></li><li><a href=\"#Redux-2\"><span class=\"toc_number toc_depth_2\">6.4</span> 路由与Redux</a></li><li><a href=\"#Redux-3\"><span class=\"toc_number toc_depth_2\">6.5</span> Redux整合</a><ul><li><a href=\"#react-router-redux\"><span class=\"toc_number toc_depth_3\">6.5.1</span> react-router-redux</a></li><li><a href=\"#dispatch\"><span class=\"toc_number toc_depth_3\">6.5.2</span> dispatch切换路由</a></li></ul></li></ul></li><li><a href=\"#redux\"><span class=\"toc_number toc_depth_1\">7</span> redux持久化</a><ul><li><a href=\"#redux-persist\"><span class=\"toc_number toc_depth_2\">7.1</span> redux-persist</a><ul><li><a href=\"#store\"><span class=\"toc_number toc_depth_3\">7.1.1</span> 持久化store</a></li><li><a href=\"#i-8\"><span class=\"toc_number toc_depth_3\">7.1.2</span> 恢复启动</a></li><li><a href=\"#i-9\"><span class=\"toc_number toc_depth_3\">7.1.3</span> 版本更新</a></li></ul></li><li><a href=\"#Immutable\"><span class=\"toc_number toc_depth_2\">7.2</span> 持久化与Immutable</a><ul><li><a href=\"#redux-persist-immutable\"><span class=\"toc_number toc_depth_3\">7.2.1</span> redux-persist-immutable</a></li><li><a href=\"#transform\"><span class=\"toc_number toc_depth_3\">7.2.2</span> transform</a></li></ul></li></ul></li><li><a href=\"#Immutable-2\"><span class=\"toc_number toc_depth_1\">8</span> Immutable</a><ul><li><a href=\"#ImmutableReact\"><span class=\"toc_number toc_depth_2\">8.1</span> Immutable与React路由</a></li><li><a href=\"#seamless-Immutable\"><span class=\"toc_number toc_depth_2\">8.2</span> seamless-Immutable</a></li></ul></li><li><a href=\"#i-10\"><span class=\"toc_number toc_depth_1\">9</span> 异步任务流管理</a><ul><li><a href=\"#axios\"><span class=\"toc_number toc_depth_2\">9.1</span> axios</a></li><li><a href=\"#redux-saga\"><span class=\"toc_number toc_depth_2\">9.2</span> redux-saga</a><ul><li><a href=\"#saga\"><span class=\"toc_number toc_depth_3\">9.2.1</span> 初始化saga</a></li><li><a href=\"#saga-2\"><span class=\"toc_number toc_depth_3\">9.2.2</span> saga分流</a></li><li><a href=\"#saga-3\"><span class=\"toc_number toc_depth_3\">9.2.3</span> saga实例</a></li></ul></li><li><a href=\"#sagaReactotron\"><span class=\"toc_number toc_depth_2\">9.3</span> saga与Reactotron</a></li></ul></li><li><a href=\"#i-11\"><span class=\"toc_number toc_depth_1\">10</span> 总结</a></li><li><a href=\"#i-12\"><span class=\"toc_number toc_depth_1\">11</span> 参考</a></li></ul></div>\n<h2><span id=\"i\">前言</span></h2>\n<p>现在已经有很多脚手架工具，如<a href=\"https://github.com/facebookincubator/create-react-app\">create-react-app</a>，支持一键创建一个React应用项目结构，很方便，但是享受方便的同时，也失去了对项目架构及技术栈完整学习的机会，而且通常脚手架创建的应用技术架构并不能完全满足我们的业务需求，需要我们自己修改，完善，所以如果希望对项目架构有更深掌控，最好还是从0到1理解一个项目。</p>\n<h2><span id=\"i-2\">项目结构与技术栈</span></h2>\n<p>我们这次的实践不准备使用任何脚手架，所以我们需要自己创建每一个文件，引入每一个技术和三方库，最终形成完整的应用，包括我们选择的完整技术栈。</p>\n<p>第一步，当然是创建目录，我们在上一篇已经弄好，如果你还没有代码，可以从Github获取：</p>\n<pre><code class=\"shell\">git clone https://github.com/codingplayboy/react-blog.git\ncd react-blog\n</code></pre>\n<p>生成项目结构如下图：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2017/12/project-dir-struc-init.png\" alt=\"React项目初始结构\" /></p>\n<ol>\n<li><code>src</code>为应用源代码目录；</li>\n<li><code>webpack</code>为webpack配置目录；</li>\n<li><code>webpack.config.js</code>为webpack配置入口文件；</li>\n<li><code>package.json</code>为项目依赖管理文件；</li>\n<li><code>yarn.lock</code>为项目依赖版本锁文件；</li>\n<li><code>.babelrc</code>文件，babel的配置文件，使用babel编译React和JavaScript代码；</li>\n<li><code>eslintrc</code>和<code>eslintignore</code>分别为eslint语法检测配置及需要忽略检查的内容或文件；</li>\n<li><code>postcss.config.js</code>为CSS后编译器postcss的配置文件；</li>\n<li><code>API.md</code>为API文档入口；</li>\n<li><code>docs</code>为文档目录；</li>\n<li><code>README.md</code>为项目说明文档；</li>\n</ol>\n<p>接下来的工作主要就是丰富<code>src</code>目录，包括搭建项目架构，开发应用功能，还有自动化，单元测试等，本篇主要关注项目架构的搭建，然后使用技术栈实践开发几个模块。</p>\n<h3><span id=\"i-3\">技术栈</span></h3>\n<p>项目架构搭建很大部分依赖于项目的技术栈，所以先对整个技术栈进行分析，总结：</p>\n<ol>\n<li>react和react-dom库是项目前提；</li>\n<li>react路由；</li>\n<li>应用状态管理容器；</li>\n<li>是否需要Immutable数据；</li>\n<li>应用状态的持久化；</li>\n<li>异步任务管理；</li>\n<li>测试及辅助工具或函数；</li>\n<li>开发调试工具；</li>\n</ol>\n<p>根据以上划分决定选用以下第三方库和工具构成项目的完整技术栈：</p>\n<ol>\n<li>react，react-dom；</li>\n<li>react-router管理应用路由；</li>\n<li>redux作为JavaScript状态容器，react-redux将React应用与redux连接；</li>\n<li>Immutable.js支持Immutable化状态，redux-immutable使整个redux store状态树Immutable化；</li>\n<li>使用redux-persist支持redux状态树的持久化，并添加redux-persist-immutable拓展以支持Immutable化状态树的持久化；</li>\n<li>使用redux-saga管理应用内的异步任务，如网络请求，异步读取本地数据等；</li>\n<li>使用jest集成应用测试，使用lodash，ramda等可选辅助类，工具类库；</li>\n<li>可选使用reactotron调试工具</li>\n</ol>\n<p>针对以上分析，完善后的项目结构如图：</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2017/12/react-redux-project-dir-struc.png\" alt=\"React-Redux项目结构\" /></p>\n<h2><span id=\"i-4\">开发调试工具</span></h2>\n<p>React应用开发目前已经有诸多调试工具，常用的如redux-devtools，<a href=\"https://github.com/infinitered/reactotron\">Reactron</a>等。</p>\n<h3><span id=\"redux-devtools\">redux-devtools</span></h3>\n<p>redux-devtools是支持热重载，回放action，自定义UI的一款Redux开发工具。</p>\n<p>首先需要按照对应的浏览器插件，然后再Redux应用中添加相关配置，就能在浏览器控制台中查看到redux工具栏了，<a href=\"https://github.com/zalmoxisus/redux-devtools-extension#installation\">详细文档点此查看</a>。</p>\n<p>然后安装项目依赖库：</p>\n<pre><code class=\"shell\">yarn add --dev redux-devtools\n</code></pre>\n<p>然后在创建redux store时将其作为redux强化器传入<code>createStore</code>方法：</p>\n<pre><code class=\"javascript\">import { applyMiddleware, compose, createStore, combineReducers } from 'redux'\n// 默认为redux提供的组合函数\nlet composeEnhancers = compose\n\nif (__DEV__) {\n  // 开发环境，开启redux-devtools\n  const composeWithDevToolsExtension = window.__REDUX_DEVTOOLS_EXTENSION_COMPOSE__\n  if (typeof composeWithDevToolsExtension === 'function') {\n    // 支持redux开发工具拓展的组合函数\n    composeEnhancers = composeWithDevToolsExtension\n  }\n}\n\n// create store\nconst store = createStore(\n  combineReducers(...),\n  initialState,\n  // 组合redux中间价和加强器，强化redux\n  composeEnhancers(\n    applyMiddleware(...middleware),\n    ...enhancers\n  )\n)\n</code></pre>\n<ol>\n<li>在开发环境下获取redux-devtools提供的拓展组合函数；</li>\n<li>创建store时使用拓展组合函数组合redux中间件和增强器，redux-dev-tools便获得了应用redux的相关信息；</li>\n</ol>\n<h3><span id=\"Reactotron\">Reactotron</span></h3>\n<p><a href=\"https://github.com/infinitered/reactotron\">Reactotron</a>是一款跨平台调试React及React Native应用的桌面应用，能动态实时监测并输出React应用等redux，action，saga异步请求等信息，如图：</p>\n<p><img src=\"https://github.com/infinitered/reactotron/raw/master/docs/images/readme/reactotron-demo-app.gif\" alt=\"Reactotron\" /></p>\n<p>首先安装：</p>\n<pre><code class=\"shell\">yarn add --dev reactotron-react-js\n</code></pre>\n<p>然后初始化Reactotron相关配置：</p>\n<pre><code class=\"react\">import Reactotron from 'reactotron-react-js';\nimport { reactotronRedux as reduxPlugin } from 'reactotron-redux';\nimport sagaPlugin from 'reactotron-redux-saga';\n\nif (Config.useReactotron) {\n  // refer to https://github.com/infinitered/reactotron for more options!\n  Reactotron\n    .configure({ name: 'React Blog' })\n    .use(reduxPlugin({ onRestore: Immutable }))\n    .use(sagaPlugin())\n    .connect();\n\n  // Let's clear Reactotron on every time we load the app\n  Reactotron.clear();\n\n  // Totally hacky, but this allows you to not both importing reactotron-react-js\n  // on every file.  This is just DEV mode, so no big deal.\n  console.tron = Reactotron;\n}\n</code></pre>\n<p>然后启使用<code>console.tron.overlay</code>方法拓展入口组件：</p>\n<pre><code class=\"react\">import './config/ReactotronConfig';\nimport DebugConfig from './config/DebugConfig';\n\nclass App extends Component {\n  render () {\n    return (\n      &lt;Provider store={store}&gt;\n        &lt;AppContainer /&gt;\n      &lt;/Provider&gt;\n    )\n  }\n}\n\n// allow reactotron overlay for fast design in dev mode\nexport default DebugConfig.useReactotron\n  ? console.tron.overlay(App)\n  : App\n</code></pre>\n<p>至此就可以使用Reactotron客户端捕获应用中发起的所有的redux和action了。</p>\n<h2><span id=\"i-5\">组件划分</span></h2>\n<p>React组件化开发原则是组件负责渲染UI，组件不同状态对应不同UI，通常遵循以下组件设计思路：</p>\n<ol>\n<li>布局组件：仅仅涉及应用UI界面结构的组件，不涉及任何业务逻辑，数据请求及操作；</li>\n<li>容器组件：负责获取数据，处理业务逻辑，通常在render()函数内返回展示型组件；</li>\n<li>展示型组件：负责应用的界面UI展示；</li>\n<li>UI组件：指抽象出的可重用的UI独立组件，通常是无状态组件；</li>\n</ol>\n<table>\n<thead>\n<tr>\n<th></th>\n<th>展示型组件</th>\n<th>容器组件</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>目标</td>\n<td>UI展示 (HTML结构和样式)</td>\n<td>业务逻辑（获取数据，更新状态）</td>\n</tr>\n<tr>\n<td>感知Redux</td>\n<td>无</td>\n<td>有</td>\n</tr>\n<tr>\n<td>数据来源</td>\n<td>props</td>\n<td>订阅Redux store</td>\n</tr>\n<tr>\n<td>变更数据</td>\n<td>调用props传递的回调函数</td>\n<td>Dispatch Redux actions</td>\n</tr>\n<tr>\n<td>可重用</td>\n<td>独立性强</td>\n<td>业务耦合度高</td>\n</tr>\n</tbody>\n</table>\n<h2><span id=\"Redux\">Redux</span></h2>\n<p>现在的任何大型web应用如果少了状态管理容器，那这个应用就缺少了时代特征，可选的库诸如mobx，redux等，实际上大同小异，各取所需，以redux为例，redux是最常用的React应用状态容器库，对于React Native应用也适用。</p>\n<blockquote>\n<p>Redux是一个JavaScript应用的可预测状态管理容器，它不依赖于具体框架或类库，所以它在多平台的应用开发中有着一致的开发方式和效率，另外它还能帮我们轻松的实现时间旅行，即action的回放。</p>\n</blockquote>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2017/12/redux-flow.png\" alt=\"redux-flow\" /></p>\n<ol>\n<li>数据单一来源原则：使用Redux作为应用状态管理容器，统一管理应用的状态树，它推从数据单一可信来源原则，所有数据都来自redux store，所有的数据更新也都由redux处理；</li>\n<li>redux store状态树：redux集中管理应用状态，组织管理形式就好比DOM树和React组件树一样，以树的形式组织，简单高效；</li>\n<li>redux和store：redux是一种Flux的实现方案，所以创建了store一词，它类似于商店，集中管理应用状态，支持将每一个发布的action分发至所有reducer；</li>\n<li>action：以对象数据格式存在，通常至少有type和payload属性，它是对redux中定义的任务的描述；</li>\n<li>reducer：通常是以函数形式存在，接收state（应用局部状态）和action对象两个参数，根据action.type(action类型)执行不同的任务，遵循函数式编程思想；</li>\n<li>dispatch：store提供的分发action的功能方法，传递一个action对象参数；</li>\n<li>createStore：创建store的方法，接收reducer，初始应用状态，redux中间件和增强器，初始化store，开始监听action；</li>\n</ol>\n<h3><span id=\"Redux_Middleware\">中间件（Redux Middleware）</span></h3>\n<p>Redux中间件，和Node中间件一样，它可以在action分发至任务处理reducer之前做一些额外工作，dispatch发布的action将依次传递给所有中间件，最终到达reducer，所以我们使用中间件可以拓展诸如记录日志，添加监控，切换路由等功能，所以中间件本质上只是拓展了<code>store.dispatch</code>方法。</p>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2017/12/redux-middleware-enhancer.png\" alt=\"redux-middleware-enhancer\" /></p>\n<h3><span id=\"Store_Enhancer\">增强器（Store Enhancer）</span></h3>\n<p>有些时候我们可能并不满足于拓展<code>dispatch</code>方法，还希望能增强store，redux提供以增强器形式增强store的各个方面，甚至可以完全定制一个store对象上的所有接口，而不仅仅是<code>store.dispatch</code>方法。</p>\n<pre><code class=\"javascript\">const logEnhancer = (createStore) =&gt; (reducer, preloadedState, enhancer) =&gt; {\n  const store = createStore(reducer, preloadedState, enhancer)\n  const originalDispatch = store.dispatch\n  store.dispatch = (action) =&gt; {\n    console.log(action)\n    originalDispatch(action)\n  }\n\n  return store\n}\n</code></pre>\n<p>最简单的例子代码如上，新函数接收redux的createStore方法和创建store需要的参数，然后在函数内部保存store对象上某方法的引用，重新实现该方法，在里面处理完增强逻辑后调用原始方法，保证原始功能正常执行，这样就增强了store的dispatch方法。</p>\n<p>可以看到，增强器完全能实现中间件的功能，其实，中间件就是以增强器方式实现的，它提供的<code>compose</code>方法就可以组合将我们传入的增强器拓展到store，而如果我们传入中间件，则需要先调用<code>applyMiddleware</code>方法包装，内部以增强器形式将中间件功能拓展到<code>store.dispatch</code>方法</p>\n<h3><span id=\"react-redux\">react-redux</span></h3>\n<p>Redux是一个独立的JavaScript应用状态管理容器库，它可以与React、Angular、Ember、jQuery甚至原生JavaScript应用配合使用，所以开发React应用时，需要将Redux和React应用连接起来，才能统一使用Redux管理应用状态，使用官方提供的<a href=\"https://github.com/reactjs/react-redux\">react-redux</a>库。</p>\n<pre><code class=\"react\">class App extends Component {\n  render () {\n    const { store } = this.props\n    return (\n      &lt;Provider store={store}&gt;\n        &lt;div&gt;\n          &lt;Routes /&gt;\n        &lt;/div&gt;\n      &lt;/Provider&gt;\n    )\n  }\n}\n</code></pre>\n<blockquote>\n<p>react-redux库提供<code>Provider</code>组件通过context方式向应用注入store，然后可以使用<code>connect</code>高阶方法，获取并监听store，然后根据store state和组件自身props计算得到新props，注入该组件，并且可以通过监听store，比较计算出的新props判断是否需要更新组件。</p>\n</blockquote>\n<p>更多关于react-redux的内容可以阅读之前的文章：<a href=\"http://blog.codingplayboy.com/2017/09/25/react-redux/\">React-Redux分析</a>。</p>\n<h3><span id=\"createStore\">createStore</span></h3>\n<p>使用redux提供的<code>createStore</code>方法创建redux store，但是在实际项目中我们常常需要拓展redux添加某些自定义功能或服务，如添加redux中间件，添加异步任务管理saga，增强redux等：</p>\n<pre><code class=\"react\">// creates the store\nexport default (rootReducer, rootSaga, initialState) =&gt; {\n  /* ------------- Redux Configuration ------------- */\n  // Middlewares\n  // Build the middleware for intercepting and dispatching navigation actions\n  const blogRouteMiddleware = routerMiddleware(history)\n  const sagaMiddleware = createSagaMiddleware()\n  const middleware = [blogRouteMiddleware, sagaMiddleware]\n\n  // enhancers\n  const enhancers = []\n  let composeEnhancers = compose\n\n  // create store\n  const store = createStore(\n    combineReducers({\n      router: routerReducer,\n      ...reducers\n    }),\n    initialState,\n    composeEnhancers(\n      applyMiddleware(...middleware),\n      ...enhancers\n    )\n  )\n  sagaMiddleware.run(saga)\n\n  return store;\n}\n</code></pre>\n<h3><span id=\"reduxImmutable\">redux与Immutable</span></h3>\n<p>redux默认提供了<code>combineReducers</code>方法整合reduers至redux，然而该默认方法期望接受原生JavaScript对象并且它把state作为原生对象处理，所以当我们使用<code>createStore</code>方法并且接受一个Immutable对象作应用初始状态时，<code>reducer</code>将会返回一个错误，源代码如下：</p>\n<pre><code class=\"react\">if   (!isPlainObject(inputState)) {\n    return   (                              \n        `The   ${argumentName} has unexpected type of \"` +                                    ({}).toString.call(inputState).match(/\\s([a-z|A-Z]+)/)[1] +\n      \".Expected argument to be an object with the following + \n      `keys:\"${reducerKeys.join('\", \"')}\"`   \n    )  \n}\n</code></pre>\n<p>如上表明，原始类型reducer接受的state参数应该是一个原生JavaScript对象，我们需要对<code>combineReducers</code>其进行增强，以使其能处理Immutable对象，<code>redux-immutable</code> 即提供创建一个可以和<a href=\"https://facebook.github.io/immutable-js/\">Immutable.js</a>协作的Redux <a href=\"http://redux.js.org/docs/api/combineReducers.html\">combineReducers</a>。</p>\n<pre><code class=\"react\">import { combineReducers } from 'redux-immutable';\nimport Immutable from 'immutable';\nimport configureStore from './CreateStore';\n\n// use Immutable.Map to create the store state tree\nconst initialState = Immutable.Map();\n\nexport default () =&gt; {\n  // Assemble The Reducers\n  const rootReducer = combineReducers({\n    ...RouterReducer,\n    ...AppReducer\n  });\n\n  return configureStore(rootReducer, rootSaga, initialState);\n}\n</code></pre>\n<p>如上代码，可以看见我们传入的<code>initialState</code>是一个<code>Immutable.Map</code>类型数据，我们将redux整个state树丛根源开始Immutable化，另外传入了可以处理Immutable state的reducers和sagas。</p>\n<p>另外每一个state树节点数据都是Immutable结构，如<code>AppReducer</code>：</p>\n<pre><code class=\"react\">const initialState = Immutable.fromJS({\n  ids: [],\n  posts: {\n    list: [],\n    total: 0,\n    totalPages: 0\n  }\n})\n\nconst AppReducer = (state = initialState, action) =&gt; {\n  case 'RECEIVE_POST_LIST':\n    const newState = state.merge(action.payload)\n    return newState || state\n  default:\n    return state\n}\n</code></pre>\n<p>这里默认使用Immutable.fromJS()方法状态树节点对象转化为Immutable结构，并且更新state时使用Immutable方法<code>state.merge()</code>，保证状态统一可预测。</p>\n<h2><span id=\"React\">React路由</span></h2>\n<p>在React web单页面应用中，页面级UI组件的展示和切换完全由路由控制，每一个路由都有对应的URL及路由信息，我们可以通过路由统一高效的管理我们的组件切换，保持UI与URL同步，保证应用的稳定性及友好体验。</p>\n<h3><span id=\"react-router\">react-router</span></h3>\n<p>React Router是完整的React 路由解决方案，也是开发React应用最常使用的路由管理库，只要用过它，绝对会喜欢上它的设计，它提供简单的API，以声明式方式实现强大的路由功能，诸如按需加载，动态路由等。</p>\n<ol>\n<li>声明式：语法简洁，清晰；</li>\n<li>按需加载：延迟加载，根据使用需要判断是否需要加载；</li>\n<li>动态路由：动态组合应用路由结构，更灵活，更符合组件化开发模式；</li>\n</ol>\n<h3><span id=\"i-6\">动态路由与静态路由</span></h3>\n<p>使用react-router v4版本可以定义跨平台的应用动态路由结构，所谓的动态路由（Dynamic Routing）即在渲染过程中发生路由的切换，而不需要在创建应用前就配置好，这也正是其区别于静态路由（Static Routing）所在，动态路由提高更灵活的路由组织方式，而且更方便编码实现路由按需加载组件。</p>\n<p>在react-router v2和v3版本中，开发React应用需要在开始渲染前就定义好完整的应用路由结构，所有的路由都需要同时初始化，才能在应用渲染后生效，会产生很多嵌套化路由，丧失了动态路由的灵活性和简洁的按需加载编码方式。</p>\n<h3><span id=\"react-router_v4x\">react-router v4.x</span></h3>\n<p>在react-router 2.x和3.x版本中，定义一个应用路由结构通常如下：</p>\n<pre><code class=\"react\">import React from 'react'\nimport ReactDOM from 'react-dom'\nimport { browserHistory, Router, Route, IndexRoute } from 'react-router'\n\nimport App from '../components/App'\nimport Home from '../components/Home'\nimport About from '../components/About'\nimport Features from '../components/Features'\n\nReactDOM.render(\n  &lt;Router history={browserHistory}&gt;\n    &lt;Route path='/' component={App}&gt;\n      &lt;IndexRoute component={Home} /&gt;\n      &lt;Route path='about' component={About} /&gt;\n      &lt;Route path='features' component={Features} /&gt;\n    &lt;/Route&gt;\n  &lt;/Router&gt;,\n  document.getElementById('app')\n)\n</code></pre>\n<p>很简单，但是所有的路由结构都需要在渲染应用前，统一定义，层层嵌套；而且如果要实现异步按需加载还需要在这里对路由配置对象进行修改，使用<code>getComponent</code>API，并侵入改造该组件，配合webpack的异步打包加载API，实现按需加载：</p>\n<ol>\n<li>路由层层嵌套，必须在渲染应用前统一声明；</li>\n<li>API不同，需要使用<code>getComponent</code>，增加路由配置对象的复杂性；</li>\n<li><code>&lt;Route&gt;</code>只是一个声明路由的辅助标签，本身无意义；</li>\n</ol>\n<p>而使用react-router v4.x则如下：</p>\n<pre><code class=\"react\">// react-dom (what we'll use here)\nimport { BrowserRouter } from 'react-router-dom'\n\nReactDOM.render((\n  &lt;BrowserRouter&gt;\n    &lt;App/&gt;\n  &lt;/BrowserRouter&gt;\n), el)\n\nconst App = () =&gt; (\n  &lt;div&gt;\n    &lt;nav&gt;\n      &lt;Link to=\"/about\"&gt;Dashboard&lt;/Link&gt;\n    &lt;/nav&gt;\n    &lt;Home /&gt;\n    &lt;div&gt;\n      &lt;Route path=\"/about\" component={About}/&gt;\n      &lt;Route path=\"/features\" component={Features}/&gt;\n    &lt;/div&gt;\n  &lt;/div&gt;\n)\n</code></pre>\n<p>相比之前版本，减少了配置化的痕迹，更凸显了组件化的组织方式，而且在渲染组件时才实现该部分路由，而如果期望按需加载该组件，则可以通过封装实现一个支持异步加载组件的高阶组件，将经过高阶组件处理后返回的组件传入<code>&lt;Route&gt;</code>即可，依然遵循组件化形式：</p>\n<ol>\n<li>灵活性：路由可以在渲染组件中声明，不需依赖于其他路由，不需要集中配置；</li>\n<li>简洁：统一传入<code>component</code>，保证路由声明的简洁性；</li>\n<li>组件化：<code>&lt;Route&gt;</code>作为一个真实组件创建路由，可以渲染；</li>\n</ol>\n<h4><span id=\"i-7\">路由钩子方法</span></h4>\n<p>另外需要注意的是，相对于之前版本提供<code>onEnter</code>, <code>onUpdate</code>, <code>onLeave</code>等钩子方法API在一定程度上提高了对路由的可控性，但是实质只是覆盖了渲染组件的生命周期方法，现在我们可以通过路由渲染组件的生命周期方法直接控制路由，如使用<code>componentDidMount</code> 或 <code>componentWillMount</code> 代替 <code>onEnter</code>。</p>\n<h3><span id=\"Redux-2\">路由与Redux</span></h3>\n<p>同时使用React-Router和Redux时，大多数情况是正常的，但是也可能出现路由变更组件未更新的情况，如：</p>\n<ol>\n<li>我们使用redux的<code>connect</code>方法将组件连接至redux：<code>connect(Home)</code>;</li>\n<li>组件不是一个路由渲染组件，即不是使用<code>Route&gt;</code>组件形式：<code>&lt;Route component={Home} /&gt;</code>声明渲染的；</li>\n</ol>\n<p>这是为什么呢？，因为Redux会实现组件的<code>shouldComponentUpdate</code>方法，当路由变化时，该组件并没有接收到props表明发生了变更，需要更新组件。</p>\n<p>那么如何解决问题呢？，要解决这个问题只需要简单的使用<code>react-router-dom</code>提供的<code>withRouter</code>方法包裹组件：</p>\n<pre><code class=\"javascript\">import { withRouter } from 'react-router-dom'\nexport default withRouter(connect(mapStateToProps)(Home))\n</code></pre>\n<h3><span id=\"Redux-3\">Redux整合</span></h3>\n<p>在使用Redux以后，需要遵循redux的原则：单一可信数据来源，即所有数据来源都只能是reudx store，react路由状态也不应例外，所以需要将路由state与store state连接。</p>\n<h4><span id=\"react-router-redux\">react-router-redux</span></h4>\n<p>连接React Router与Redux，需要使用<code>react-router-redux</code>库，而且react-router v4版本需要指定安装<code>@next</code>版本和<code>hsitory</code>库：</p>\n<pre><code class=\"shell\">yarn add react-router-redux@next\nyarn add history\n</code></pre>\n<p>然后，在创建store时，需要实现如下配置：</p>\n<ol>\n<li>\n<p>创建一个history对象，对于web应用，我们选择browserHisotry，对应需要从<code>history/createBrowserHistory</code>模块引入<code>createHistory</code>方法以创建history对象；</p>\n<p><a href=\"https://reacttraining.com/react-router/web/api/history\">点此查看更多history相关内容</a></p>\n</li>\n<li>\n<p>添加<code>routerReducer</code>和<code>routerMiddleware</code>中间件“，其中<code>routerMiddleware</code>中间件接收history对象参数，连接store和history，等同于旧版本的<code>syncHistoryWithStore</code>；</p>\n</li>\n</ol>\n<pre><code class=\"javascript\">import createHistory from 'history/createBrowserHistory'\nimport { ConnectedRouter, routerReducer, routerMiddleware, push } from 'react-router-redux'\n// Create a history of your choosing (we're using a browser history in this case)\nexport const history = createHistory()\n\n// Build the middleware for intercepting and dispatching navigation actions\nconst middleware = routerMiddleware(history)\n\n// Add the reducer to your store on the `router` key\n// Also apply our middleware for navigating\nconst store = createStore(\n  combineReducers({\n    ...reducers,\n    router: routerReducer\n  }),\n  applyMiddleware(middleware)\n)\n\nreturn store\n</code></pre>\n<p>在渲染根组件时，我们抽象出两个组件：</p>\n<ol>\n<li>初始化渲染根组件，挂载至DOM的根组件，由<code>&lt;Provider&gt;</code>组件包裹，注入store；</li>\n<li>路由配置组件，在根组件中，声明路由配置组件，初始化必要的应用路由定义及路由对象；</li>\n</ol>\n<pre><code class=\"javascript\">import createStore from './store/'\nimport Routes from './routes/'\nimport appReducer from './store/appRedux'\n\nconst store = createStore({}, {\n  app: appReducer\n})\n\n/**\n * 项目根组件\n * @class App\n * @extends Component\n */\nclass App extends Component {\n  render () {\n    const { store } = this.props\n\n    return (\n      &lt;Provider store={store}&gt;\n        &lt;div&gt;\n          &lt;Routes /&gt;\n        &lt;/div&gt;\n      &lt;/Provider&gt;\n    )\n  }\n}\n\n// 渲染根组件\nReactDOM.render(\n  &lt;App store={store} /&gt;,\n  document.getElementById('app')\n)\n</code></pre>\n<p>上面的<code>&lt;Routes&gt;</code>组件是项目的路由组件：</p>\n<pre><code class=\"javascript\">import { history } from '../store/'\nimport { ConnectedRouter } from 'react-router-redux'\nimport { Route } from 'react-router'\n\nclass Routes extends Component {\n  render () {\n    return (\n      &lt;ConnectedRouter history={history}&gt;\n        &lt;div&gt;\n          &lt;BlogHeader /&gt;\n          &lt;div&gt;\n            &lt;Route exact path='/' component={Home} /&gt;\n            &lt;Route exact path='/posts/:id' component={Article} /&gt;\n          &lt;/div&gt;\n        &lt;/div&gt;\n      &lt;/ConnectedRouter&gt;\n    )\n  }\n}\n</code></pre>\n<p>首先使用<code>react-router-redux</code>提供的<code>ConnectedRouter</code>组件包裹路由配置，该组件将自动使用<code>&lt;Provider&gt;</code>组件注入的<code>store</code>，我们需要做的是手动传入<code>history</code>属性，在组件内会调用<code>history.listen</code>方法监听浏览器<code>LOCATION_CHANGE</code>事件，最后返回<code>react-router</code>的<code>&lt;Router &gt;</code>组件，处理作为<code>this.props.children</code>传入的路由配置，<a href=\"https://github.com/ReactTraining/react-router/blob/master/packages/react-router-redux/modules/ConnectedRouter.js\">ConnectedRouter组件内容传送</a>。</p>\n<h4><span id=\"dispatch\">dispatch切换路由</span></h4>\n<p>配置上面代码后，就能够以dispatch action的方式触发路由切换和组件更新了：</p>\n<pre><code class=\"react\">import { push } from 'react-router-redux'\n// Now you can dispatch navigation actions from anywhere!\nstore.dispatch(push('/about'))\n</code></pre>\n<p>这个reducer所做的只是将App导航路由状态合并入store。</p>\n<h2><span id=\"redux\">redux持久化</span></h2>\n<p>我们知道浏览器默认有资源的缓存功能并且提供本地持久化存储方式如localStorage，indexDb，webSQL等，通常可以将某些数据存储在本地，在一定周期内，当用户再次访问时，直接从本地恢复数据，可以极大提高应用启动速度，用户体验更有优势，我们可以使用localStorage存储一些数据，如果是较大量数据存储可以使用webSQL。</p>\n<p>另外不同于以往的直接存储数据，启动应用时本地读取然后恢复数据，对于redux应用而言，如果只是存储数据，那么我们就得为每一个reducer拓展，当再次启动应用时去读取持久化的数据，这是比较繁琐而且低效的方式，是否可以尝试存储reducer key，然后根据key恢复对应的持久化数据，首先注册Rehydrate reducer，当触发action时根据其reducer key恢复数据，然后只需要在应用启动时分发action，这也很容易抽象成可配置的拓展服务，实际上三方库<a href=\"https://github.com/rt2zz/redux-persist\">redux-persist</a>已经为我们做好了这一切。</p>\n<h3><span id=\"redux-persist\">redux-persist</span></h3>\n<p>要实现redux的持久化，包括redux store的本地持久化存储及恢复启动两个过程，如果完全自己编写实现，代码量比较复杂，可以使用开源库<code>redux-persist</code>，它提供<code>persistStore</code>和<code>autoRehydrate</code>方法分别持久化本地存储store及恢复启动store，另外还支持自定义传入持久化及恢复store时对store state的转换拓展。</p>\n<pre><code class=\"shell\">yarn add redux-persist\n</code></pre>\n<h4><span id=\"store\">持久化store</span></h4>\n<p>如下在创建store时会调用persistStore相关服务-<code>RehydrationServices.updateReducers()</code>：</p>\n<pre><code class=\"react\">// configure persistStore and check reducer version number\nif (ReduxPersistConfig.active) {\n  RehydrationServices.updateReducers(store);\n}\n</code></pre>\n<p>该方法内实现了store的持久化存储：</p>\n<pre><code class=\"react\">// Check to ensure latest reducer version\nstorage.getItem('reducerVersion').then((localVersion) =&gt; {\n  if (localVersion !== reducerVersion) {\n    // 清空 store\n    persistStore(store, null, startApp).purge();\n    storage.setItem('reducerVersion', reducerVersion);\n  } else {\n    persistStore(store, null, startApp);\n  }\n}).catch(() =&gt; {\n  persistStore(store, null, startApp);\n  storage.setItem('reducerVersion', reducerVersion);\n})\n</code></pre>\n<p>会在localStorage存储一个reducer版本号，这个是在应用配置文件中可以配置，首次执行持久化时存储该版本号及store，若reducer版本号变更则清空原来存储的store，否则传入store给持久化方法<code>persistStore</code>即可。</p>\n<pre><code class=\"javascript\">persistStore(store, [config], [callback])\n</code></pre>\n<p>该方法主要实现store的持久化以及分发rehydration action :</p>\n<ol>\n<li>订阅 redux store，当其发生变化时触发store存储操作；</li>\n<li>从指定的StorageEngine（如localStorage）中获取数据，进行转换，然后通过分发 REHYDRATE action，触发 REHYDRATE 过程；</li>\n</ol>\n<p>接收参数主要如下：</p>\n<ol>\n<li>store: 持久化的store；</li>\n<li>config：配置对象\n<ol>\n<li>storage：一个 持久化引擎，例如 LocalStorage 和 AsyncStorage；</li>\n<li>transforms： 在 rehydration 和 storage 阶段被调用的转换器；</li>\n<li>blacklist： 黑名单数组，指定持久化忽略的 reducers 的 key；</li>\n</ol>\n</li>\n<li>callback：ehydration 操作结束后的回调；</li>\n</ol>\n<h4><span id=\"i-8\">恢复启动</span></h4>\n<p>和persisStore一样，依然是在创建redux store时初始化注册rehydrate拓展：</p>\n<pre><code class=\"react\">// add the autoRehydrate enhancer\nif (ReduxPersist.active) {\n  enhancers.push(autoRehydrate());\n}\n</code></pre>\n<p>该方法实现的功能很简单，即使用 持久化的数据恢复(rehydrate) store 中数据，它其实是注册了一个autoRehydarte reducer，会接收前文persistStore方法分发的rehydrate action，然后合并state。</p>\n<p>当然，autoRehydrate不是必须的，我们可以自定义恢复store方式：</p>\n<pre><code class=\"react\">import {REHYDRATE} from 'redux-persist/constants';\n\n//...\ncase REHYDRATE:\n  const incoming = action.payload.reducer\n  if (incoming) {\n    return {\n      ...state,\n      ...incoming\n    }\n  }\n  return state;\n</code></pre>\n<h4><span id=\"i-9\">版本更新</span></h4>\n<p>需要注意的是redux-persist库已经发布到v5.x，而本文介绍的以v5.x为例，<a href=\"https://github.com/rt2zz/redux-persist/tree/f4a6e86c66693a0bd5e6ea73043fd98b14f44a96\">v4.x</a>参考此处，新版本有一些更新，可以选择性决定使用哪个版本，<a href=\"https://github.com/rt2zz/redux-persist/releases\">详细请点击查看</a>。</p>\n<h3><span id=\"Immutable\">持久化与Immutable</span></h3>\n<p>前面已经提到Redux与Immutable的整合，上文使用的redux -persist默认也只能处理原生JavaScript对象的redux store state，所以需要拓展以兼容Immutable。</p>\n<h4><span id=\"redux-persist-immutable\">redux-persist-immutable</span></h4>\n<p>使用<a href=\"https://github.com/rt2zz/redux-persist-immutable\">redux-persist-immutable</a>库可以很容易实现兼容，所做的仅仅是使用其提供的<code>persistStore</code>方法替换redux-persist所提供的方法：</p>\n<pre><code class=\"react\">import { persistStore } from 'redux-persist-immutable';\n</code></pre>\n<h4><span id=\"transform\">transform</span></h4>\n<p>我们知道持久化store时，针对的最好是原生JavaScript对象，因为通常Immutable结构数据有很多辅助信息，不易于存储，所以需要定义持久化及恢复数据时的转换操作：</p>\n<pre><code class=\"react\">import R from 'ramda';\nimport Immutable, { Iterable } from 'immutable';\n\n// change this Immutable object into a JS object\nconst convertToJs = (state) =&gt; state.toJS();\n\n// optionally convert this object into a JS object if it is Immutable\nconst fromImmutable = R.when(Iterable.isIterable, convertToJs);\n\n// convert this JS object into an Immutable object\nconst toImmutable = (raw) =&gt; Immutable.fromJS(raw);\n\n// the transform interface that redux-persist is expecting\nexport default {\n  out: (state) =&gt; {\n    return toImmutable(state);\n  },\n  in: (raw) =&gt; {\n    return fromImmutable(raw);\n  }\n};\n</code></pre>\n<p>如上，输出对象中的in和out分别对应持久化及恢复数据时的转换操作，实现的只是使用<code>fromJS()</code>和<code>toJS()</code>转换Js和Immutable数据结构，使用方式如下：</p>\n<pre><code class=\"react\">import immutablePersistenceTransform from '../services/ImmutablePersistenceTransform'\npersistStore(store, {\n  transforms: [immutablePersistenceTransform]\n}, startApp);\n</code></pre>\n<h2><span id=\"Immutable-2\">Immutable</span></h2>\n<p>在项目中引入Immutable以后，需要尽量保证以下几点：</p>\n<ol>\n<li>redux store整个state树的统一Immutable化；</li>\n<li>redux持久化对Immutable数据的兼容；</li>\n<li>React路由兼容Immutable；</li>\n</ol>\n<p>关于Immutable及Redux，Reselect等的实践考验查看之前写的一篇文章：<a href=\"http://blog.codingplayboy.com/2017/09/14/immutable-react-redux/\">Immutable.js与React,Redux及reselect的实践</a>。</p>\n<h3><span id=\"ImmutableReact\">Immutable与React路由</span></h3>\n<p>前面两点已经在前面两节阐述过，第三点react-router兼容Immutable，其实就是使应用路由状态兼容Immutable，在React路由一节已经介绍如何将React路由状态连接至Redux store，但是如果应用使用了Immutable库，则还需要额外处理，将react-router state转换为Immutable格式，routeReducer不能处理Immutable，我们需要自定义一个新的RouterReducer：</p>\n<pre><code class=\"javascript\">import Immutable from 'immutable';\nimport { LOCATION_CHANGE } from 'react-router-redux';\n\nconst initialState = Immutable.fromJS({\n  location: null\n});\n\nexport default (state = initialState, action) =&gt; {\n  if (action.type === LOCATION_CHANGE) {\n    return state.set('location', action.payload);\n  }\n\n  return state;\n};\n</code></pre>\n<p>将默认初始路由状态转换为Immutable，并且路由变更时使用Immutable API操作state。</p>\n<h3><span id=\"seamless-Immutable\">seamless-Immutable</span></h3>\n<p>当引入Immutable.js后，对应用状态数据结构的使用API就得遵循Immutable API，而不能再使用原生JavaScript对象，数组等的操作API了，诸如，数组解构（[a, b] = [b, c]），对象拓展符（&#8230;）等，存在一些问题：</p>\n<ol>\n<li>Immutable数据辅助节点较多，数据较大：</li>\n<li>必须使用Immutable语法，和JavaScript语法有差异，不能很好的兼容；</li>\n<li>和Redux，react-router等JavaScript库写协作时，需要引入额外的兼容处理库；</li>\n</ol>\n<p>针对这些问题，社区有了<code>seamless-immutable</code>可供替换选择：</p>\n<ol>\n<li>更轻：相对于Immutable.js<code>seamless-immutable</code>库更轻小；</li>\n<li>语法：对象和数组的操作语法更贴近原生JavaScript；</li>\n<li>和其他JavaScript库协作更方便；</li>\n</ol>\n<h2><span id=\"i-10\">异步任务流管理</span></h2>\n<p>最后要介绍的模块是异步任务管理，在应用开发过程中，最主要的异步任务就是数据HTTP请求，所以我们讲异步任务管理，主要关注在数据HTTP请求的流程管理。</p>\n<h3><span id=\"axios\">axios</span></h3>\n<p>本项目中使用<a href=\"https://github.com/axios/axios\">axios</a>作为HTTP请求库，axios是一个Promise格式的HTTP客户端，选择此库的原因主要有以下几点：</p>\n<ol>\n<li>能在浏览器发起XMLHttpRequest，也能在node.js端发起HTTP请求；</li>\n<li>支持Promise；</li>\n<li>能拦截请求和响应；</li>\n<li>能取消请求；</li>\n<li>自动转换JSON数据；</li>\n</ol>\n<h3><span id=\"redux-saga\">redux-saga</span></h3>\n<p>redux-saga是一个致力于使应用中如数据获取，本地缓存访问等异步任务易于管理，高效运行，便于测试，能更好的处理异常的三方库。</p>\n<p>Redux-saga是一个redux中间件，它就像应用中一个单独的进程，只负责管理异步任务，它可以接受应用主进程的redux action以决定启动，暂停或者是取消进程任务，它也可以访问redux应用store state，然后分发action。</p>\n<h4><span id=\"saga\">初始化saga</span></h4>\n<p>redux-saga是一个中间件，所以首先调用<code>createSagaMiddleware</code>方法创建中间件，然后使用redux的<code>applyMiddleware</code>方法启用中间件，之后使用compose辅助方法传给<code>createStore</code>创建store，最后调用<code>run</code>方法启动根saga：</p>\n<pre><code class=\"react\">import { createStore, applyMiddleware, compose } from 'redux';\nimport createSagaMiddleware from 'redux-saga';\nimport rootSaga from '../sagas/'\n\nconst sagaMiddleware = createSagaMiddleware({ sagaMonitor });\nmiddleware.push(sagaMiddleware);\nenhancers.push(applyMiddleware(...middleware));\n\nconst store = createStore(rootReducer, initialState, compose(...enhancers));\n\n// kick off root saga\nsagaMiddleware.run(rootSaga);\n</code></pre>\n<h4><span id=\"saga-2\">saga分流</span></h4>\n<p>在项目中通常会有很多并列模块，每个模块的saga流也应该是并列的，需要以多分支形式并列，redux-saga提供的<code>fork</code>方法就是以新开分支的形式启动当前saga流：</p>\n<pre><code class=\"react\">import { fork, takeEvery } from 'redux-saga/effects'\nimport { HomeSaga } from './Home/flux.js'\nimport { AppSaga } from './Appflux.js'\n\nconst sagas = [\n  ...AppSaga,\n  ...HomeSaga\n]\n\nexport default function * root() {\n  yield sagas.map(saga =&gt; fork(saga))\n}\n</code></pre>\n<p>如上，首先收集所有模块根saga，然后遍历数组，启动每一个saga流根saga。</p>\n<h4><span id=\"saga-3\">saga实例</span></h4>\n<p>以AppSaga为例，我们期望在应用启动时就发起一些异步请求，如获取文章列表数据将其填充至redux store，而不等待使用数据的组件渲染完才开始请求数据，提高响应速度：</p>\n<pre><code class=\"react\">const REQUEST_POST_LIST = 'REQUEST_POST_LIST'\nconst RECEIVE_POST_LIST = 'RECEIVE_POST_LIST'\n\n/**\n * 请求文章列表ActionCreator\n * @param {object} payload\n */\nfunction requestPostList (payload) {\n  return {\n    type: REQUEST_POST_LIST,\n    payload: payload\n  }\n}\n\n/**\n * 接收文章列表ActionCreator\n * @param {*} payload\n */\nfunction receivePostList (payload) {\n  return {\n    type: RECEIVE_POST_LIST,\n    payload: payload\n  }\n}\n\n/**\n * 处理请求文章列表Saga\n * @param {*} payload 请求参数负载\n */\nfunction * getPostListSaga ({ payload }) {\n  const data = yield call(getPostList)\n  yield put(receivePostList(data))\n}\n\n// 定义AppSaga\nexport function * AppSaga (action) {\n  // 接收最近一次请求，然后调用getPostListSaga子Saga\n  yield takeLatest(REQUEST_POST_LIST, getPostListSaga)\n}\n</code></pre>\n<ol>\n<li><code>takeLatest</code>：在<code>AppSaga</code>内使用<code>takeLatest</code>方法监听<code>REQUEST_POST_LIST</code>action，若短时间内连续发起多次action，则会取消前面未响应的action，只发起最后一次action；</li>\n<li><code>getPostListSaga</code>子Saga：当接收到该action时，调用<code>getPostListSaga</code>，并将payload传递给它，<code>getPostListSaga</code>是AppSaga的子级Saga，在里面处理具体异步任务；</li>\n<li><code>getPostList</code>：<code>getPostListSaga</code>会调用<code>getPostList</code>方法，发起异步请求，拿到响应数据后，调用<code>receivePostList</code> ActionCreator，创建并分发action，然后由reducer处理相应逻辑；</li>\n</ol>\n<p><code>getPostList</code>方法内容如下：</p>\n<pre><code class=\"react\">/**\n * 请求文章列表方法\n * @param {*} payload 请求参数\n *  eg: {\n *    page: Num,\n *    per_page: Num\n *  }\n */\nfunction getPostList (payload) {\n  return fetch({\n    ...API.getPostList,\n    data: payload\n  }).then(res =&gt; {\n    if (res) {\n      let data = formatPostListData(res.data)\n      return {\n        total: parseInt(res.headers['X-WP-Total'.toLowerCase()], 10),\n        totalPages: parseInt(res.headers['X-WP-TotalPages'.toLowerCase()], 10),\n        ...data\n      }\n    }\n  })\n}\n</code></pre>\n<p><code>put</code>是redux-saga提供的可分发action方法，take，call等都是<code>redux-saga</code>提供的API，更多内容<a href=\"https://redux-saga.js.org/docs/api/\">查看API文档</a>。</p>\n<p>之后便可以在项目路由根组件注入ActionCreator，创建action，然后saga就会接收进行处理了。</p>\n<h3><span id=\"sagaReactotron\">saga与Reactotron</span></h3>\n<p>前面已经配置好可以使用Reactotron捕获应用所有redux和action，而redux-saga是一类redux中间件，所以捕获sagas需要额外配置，创建store时，在saga中间件内添加sagaMonitor服务，监听saga:</p>\n<pre><code class=\"react\">const sagaMonitor = Config.useReactotron ? console.tron.createSagaMonitor() : null;\nconst sagaMiddleware = createSagaMiddleware({ sagaMonitor });\nmiddleware.push(sagaMiddleware);\n...\n</code></pre>\n<h2><span id=\"i-11\">总结</span></h2>\n<p>本文较详细的总结了个人从0到1搭建一个项目架构的过程，对React， Redux应用和项目工程实践都有了更深的理解及思考，在大前端成长之路继续砥砺前行。</p>\n<p><strong>注：文中列出的所有技术栈，博主计划一步一步推进，目前源码中使用的技术有React，React Router，Redux，react-redux，react-router-redux，Redux-saga，axios。后期计划推进Immutable，Reactotron，Redux Persist。</strong></p>\n<p><a href=\"https://github.com/codingplayboy/react-blog\">完整项目代码见github</a></p>\n<h2><span id=\"i-12\">参考</span></h2>\n<ol>\n<li><a href=\"https://reactjs.org/docs/integrating-with-other-libraries.html\">React</a></li>\n<li><a href=\"https://redux.js.org/\">Redux</a></li>\n<li><a href=\"https://reacttraining.com/react-router/web/guides/philosophy\">React Router v4</a></li>\n<li><a href=\"https://redux-saga.js.org/\">redux-saga</a></li>\n<li><a href=\"https://github.com/rt2zz/redux-persist\">Redux Persist</a></li>\n</ol>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>现在已经有很多脚手架工具，如create-react-app，支持一键创建一个React应用项目结构，很方便，但是享受方便的同时，也失去了对项目架构及技术栈完整学习的机会，而且通常脚手架创建的应用技术架构并不能完全满足我们的业务需求，需要我们自己修改，完善，所以如果希望对项目架构有更深掌控，最好还是从0到1理解一个项目。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                72
+            ],
+            "tags": [
+                73,
+                84,
+                175,
+                176,
+                167
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/932"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=932"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/932/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=932"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=932"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=932"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 926,
+            "date": "2017-12-26T21:29:49",
+            "date_gmt": "2017-12-26T13:29:49",
+            "guid": {
+                "rendered": "http://blog.codingplayboy.com/?p=926"
+            },
+            "modified": "2017-12-26T21:29:49",
+            "modified_gmt": "2017-12-26T13:29:49",
+            "slug": "react-router-browserhistory-404",
+            "status": "publish",
+            "type": "post",
+            "link": "http://blog.codingplayboy.com/2017/12/26/react-router-browserhistory-404/",
+            "title": {
+                "rendered": "react-router browserHistory刷新页面404问题解决"
+            },
+            "content": {
+                "rendered": "<p>使用React开发新项目时，遇见了刷新页面，直接访问二级或三级路由时，访问失败，出现404或资源加载异常的情况，本篇针对此问题进行分析并总结解决方案。</p>\n<div id=\"toc_container\" class=\"toc_light_blue no_bullets\"><p class=\"toc_title\">索引</p><ul class=\"toc_list\"><li><a href=\"#i\"><span class=\"toc_number toc_depth_1\">1</span> 背景</a></li><li><a href=\"#i-2\"><span class=\"toc_number toc_depth_1\">2</span> 分析问题</a><ul><li><a href=\"#react-router\"><span class=\"toc_number toc_depth_2\">2.1</span> react-router</a><ul><li><a href=\"#Node\"><span class=\"toc_number toc_depth_3\">2.1.1</span> Node</a></li><li><a href=\"#Nginx\"><span class=\"toc_number toc_depth_3\">2.1.2</span> Nginx</a></li><li><a href=\"#Apache\"><span class=\"toc_number toc_depth_3\">2.1.3</span> Apache</a></li></ul></li><li><a href=\"#webpack-dev-server\"><span class=\"toc_number toc_depth_2\">2.2</span> webpack-dev-server</a><ul><li><a href=\"#i-3\"><span class=\"toc_number toc_depth_3\">2.2.1</span> 默认情况</a></li><li><a href=\"#i-4\"><span class=\"toc_number toc_depth_3\">2.2.2</span> 自定义值</a></li><li><a href=\"#Proxy\"><span class=\"toc_number toc_depth_3\">2.2.3</span> Proxy</a></li></ul></li></ul></li><li><a href=\"#i-5\"><span class=\"toc_number toc_depth_1\">3</span> 解决问题</a></li></ul></div>\n<h2><span id=\"i\">背景</span></h2>\n<p>使用webpack-dev-server做本地开发服务器时，正常情况只需要简单使用<code>webpack-dev-server</code>指令启动即可，但是当项目处于以下两种情况时，往往需要有嵌套路由和异步加载路由：</p>\n<ol>\n<li>我们使用react-router这种路由库构建单页面应用路由；</li>\n<li>使用<code>html-webpack-plugin</code>插件动态将加载js的<code>&lt;script&gt;</code>标签注入html文档；</li>\n</ol>\n<p>这时，访问<code>localhost:9090</code>是可以正常加载页面和js等文件的，但是当我们需要访问二级甚至三级路由或者刷新页面时，如<code>localhost:9090/posts/92</code>时，可能会出现两种情况：</p>\n<ol>\n<li>页面加载失败，返回<code>Cannot Get（404）</code>；</li>\n<li>服务响应，但是没有返回webpack处理输出的html文件，导致无法加载js资源，第二种情况如图：</li>\n</ol>\n<p><img src=\"http://blog.codingplayboy.com/wp-content/uploads/2017/12/react-router-browser-history-404.png\" alt=\"react-router-browser-history\" /></p>\n<p>那么我们怎么处理才能正常访问，各页面路由呢？博主追踪溯源，查找文档配置后解决了问题，本篇就是对整个解决问题过程的总结。</p>\n<h2><span id=\"i-2\">分析问题</span></h2>\n<p>发现问题后，我们就要开始分析，解决问题了，我们判断这个问题一般是两方面原因造成：</p>\n<ol>\n<li>react-router路前端由配置；</li>\n<li>webpack-dev-server服务配置；</li>\n</ol>\n<h3><span id=\"react-router\">react-router</span></h3>\n<p>因为前端路由更容易确定问题，更方便分析，而且对于react-router更熟悉，所以首先去查询react-router路由库相关配置信息，发现文档中提到了使用<code>browserHistory</code>时，会创建真实的URL，处理初始<code>/</code>请求没有问题，但是对于跳转路由后，刷新页面或者直接访问该URL时，会发现无法正确相应，更多信息<a href=\"https://react-guide.github.io/react-router-cn/docs/guides/basics/Histories.html\">查看参考文档</a>，文档中也提供了几种服务器配置解决方式：</p>\n<h4><span id=\"Node\">Node</span></h4>\n<pre><code class=\"javascript\">const express = require('express')\nconst path = require('path')\nconst port = process.env.PORT || 8080\nconst app = express()\n\n// 通常用于加载静态资源\napp.use(express.static(__dirname + '/public'))\n\n// 在你应用 JavaScript 文件中包含了一个 script 标签\n// 的 index.html 中处理任何一个 route\napp.get('*', function (request, response){\n  response.sendFile(path.resolve(__dirname, 'public', 'index.html'))\n})\n\napp.listen(port)\nconsole.log(\"server started on port \" + port)\n</code></pre>\n<p>在使用Node作为服务时，需要使用通配符<code>*</code>监听所有请求，返回目标html文档（引用js资源的html）。</p>\n<h4><span id=\"Nginx\">Nginx</span></h4>\n<p>如果使用的是nginx服务器，则只需要使用<a href=\"http://nginx.org/en/docs/http/ngx_http_core_module.html#try_files\"><code>try_files</code> 指令</a>：</p>\n<pre><code class=\"javascript\">server {\n  ...\n  location / {\n    try_files $uri /index.html\n  }\n}\n</code></pre>\n<h4><span id=\"Apache\">Apache</span></h4>\n<p>如果使用Apache服务器，则需要在项目根目录创建<code>.htaccess</code>文件，文件包含如下内容：</p>\n<pre><code class=\"shell\">RewriteBase /\nRewriteRule ^index\\.html$ - [L]\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule . /index.html [L]\n</code></pre>\n<p>以下都是针对服务器的配置，可惜的是我们目前还没引入相关服务器，只是使用了webpack-dev-server的内置服务，但是我们已经找到问题所在了，就是路由请求无法匹配返回html文档，所以接下来就该去webpack-dev-server文档中查找解决方式了。</p>\n<h3><span id=\"webpack-dev-server\">webpack-dev-server</span></h3>\n<p>在这里不得不吐槽一下webpack-dev-server官方文档，博主反复看了几遍，才看清楚了问题所在，这里也分两种情况：</p>\n<ol>\n<li>没有修改<code>output.publicPath</code>，即webpack配置文件中没有声明值，属于默认情况；</li>\n<li>设置了<code>output.publicPath</code>为自定义值；</li>\n</ol>\n<p><a href=\"https://webpack.github.io/docs/webpack-dev-server.html#the-historyapifallback-option\">点此查看文档</a></p>\n<h4><span id=\"i-3\">默认情况</span></h4>\n<p>默认情况下，没有修改<code>output.publicPath</code>值，只需要设置webpack-dev-server的<code>historyApiFallback</code>配置：</p>\n<pre><code class=\"json\">devServer: {\n  historyApiFallback: true\n}\n</code></pre>\n<blockquote>\n<p>If you are using the HTML5 history API you probably need to serve your <code>index.html</code> in place of 404 responses, which can be done by setting <code>historyApiFallback: true</code></p>\n<p>如果你的应用使用HTML5 history API，你可能需要使用<code>index.html</code>响应404或者问题请求，只需要设置g <code>historyApiFallback: true</code>即可</p>\n</blockquote>\n<h4><span id=\"i-4\">自定义值</span></h4>\n<blockquote>\n<p>However, if you have modified <code>output.publicPath</code> in your Webpack configuration, you need to specify the URL to redirect to. This is done using the <code>historyApiFallback.index</code> option</p>\n<p>如果你在webpack配置文件中修改了 <code>output.publicPath</code> 值，那么你就需要声明请求重定向，配置<code>historyApiFallback.index</code> 值。</p>\n</blockquote>\n<pre><code class=\"json\">// output.publicPath: '/assets/'\nhistoryApiFallback: {\n  index: '/assets/'\n}\n</code></pre>\n<h4><span id=\"Proxy\">Proxy</span></h4>\n<p>发现使用以上方式，并不能完全解决我的问题，总会有路由请求响应异常，于是博主继续查找更好的解决方案：</p>\n<p><a href=\"https://webpack.github.io/docs/webpack-dev-server.html#bypass-the-proxy\">点此查看文档</a></p>\n<blockquote>\n<p>The proxy can be optionally bypassed based on the return from a function. The function can inspect the HTTP request, response, and any given proxy options. It must return either <code>false</code> or a URL path that will be served <em>instead</em> of continuing to proxy the request.</p>\n<p>代理提供通过函数返回值响应请求方式，针对不同请求进行不同处理，函数参数接收HTTP请求和响应体，以及代理配置对象，这个函数必须返回false或URL路径，以表明如何继续处理请求，返回URL时，源请求将被代理到该URL路径请求。</p>\n</blockquote>\n<pre><code class=\"json\">proxy: {\n  '/': {\n    target: 'https://api.example.com',\n    secure: false,\n    bypass: function(req, res, proxyOptions) {\n      if (req.headers.accept.indexOf('html') !== -1) {\n        console.log('Skipping proxy for browser request.');\n        return '/index.html';\n      }\n    }\n  }\n}\n</code></pre>\n<p>如上配置，可以监听<code>https://api.example.com</code>域下的<code>/</code>开头的请求（等效于所有请求），然后判断请求头中<code>accept</code>字段是否包含<code>html</code>，若包含，则代理请求至<code>/index.html</code>，随后将返回index.html文档至浏览器。</p>\n<h2><span id=\"i-5\">解决问题</span></h2>\n<p>综合以上方案，因为在webpack配置中修改了<code>output.publicPath</code>为<code>/assets/</code>，所以博主采用webpack-dev-server Proxy代理方式解决了问题：</p>\n<pre><code class=\"json\">const PUBLICPATH = '/assets/'\n...\nproxy: {\n  '/': {\n    bypass: function (req, res, proxyOptions) {\n      console.log('Skipping proxy for browser request.')\n      return `${PUBLICPATH}/index.html`\n    }\n  }\n}\n</code></pre>\n<p>监听所有前端路由，然后直接返回<code>${PUBLICPATH}/index.html</code>，<code>PUBLICPATH</code>就是设置的<code>output.publicPath</code>值。</p>\n<p>另外，博主总是习惯性的声明，虽然不设置该属性也能满足预期访问效果：</p>\n<pre><code class=\"json\">historyApiFallback: true\n</code></pre>\n",
+                "protected": false
+            },
+            "excerpt": {
+                "rendered": "<p>使用React开发新项目时，遇见了刷新页面，直接访问二级或三级路由时，访问失败，出现404或资源加载异常的情况，本篇针对此问题进行分析并总结解决方案。</p>\n",
+                "protected": false
+            },
+            "author": 1,
+            "featured_media": 0,
+            "comment_status": "open",
+            "ping_status": "open",
+            "sticky": false,
+            "template": "",
+            "format": "standard",
+            "meta": [],
+            "categories": [
+                72,
+                165
+            ],
+            "tags": [
+                197,
+                84,
+                166,
+                196
+            ],
+            "_links": {
+                "self": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/926"
+                    }
+                ],
+                "collection": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts"
+                    }
+                ],
+                "about": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/types/post"
+                    }
+                ],
+                "author": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/users/1"
+                    }
+                ],
+                "replies": [
+                    {
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/comments?post=926"
+                    }
+                ],
+                "version-history": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/posts/926/revisions"
+                    }
+                ],
+                "wp:attachment": [
+                    {
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/media?parent=926"
+                    }
+                ],
+                "wp:term": [
+                    {
+                        "taxonomy": "category",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/categories?post=926"
+                    },
+                    {
+                        "taxonomy": "post_tag",
+                        "embeddable": true,
+                        "href": "http://blog.codingplayboy.com/wp-json/wp/v2/tags?post=926"
+                    }
+                ],
+                "curies": [
+                    {
+                        "name": "wp",
+                        "href": "https://api.w.org/{rel}",
+                        "templated": true
+                    }
+                ]
+            }
+        }
+    ]
+}
