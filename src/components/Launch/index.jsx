@@ -96,7 +96,6 @@ class Launch extends Component {
       <div className={classes.wrap}>
         <LinearProgress mode='buffer' value={complete} color='secondary'
           valueBuffer={buffer} className={classes.progress} />
-        <Avatar className={classes.avatar}>X</Avatar>
         <div className={classes.titleWrap}>
           <h2>欢迎进入</h2>
           <div className={`${classes.transitionDiv} ${complete > 0 ? classes.fadeIn : ''}`} />
