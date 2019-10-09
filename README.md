@@ -58,21 +58,23 @@
 
 
 ## 开发过程中遇到的问题和解决方式：
-1. 问题如下：
+### 问题一如下：
 
 ![img](/images/scss.png)
 
 解决方法：
 
 在webpack中的scss-loader中加入exclude，如下图：
+
 ![img](/images/scss-handler.png)
 
-2. 问题二如下：
+### 问题二如下：
 
 ![img](/images/transform-runtime.png)
 
 解决方法：
 
 去掉babel中的@babel/plugin-transform-runtime插件
+
 ![img](/images/transform-runtime-handler.png)
 
