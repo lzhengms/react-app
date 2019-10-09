@@ -51,6 +51,7 @@
 7. json-server：实现restfulapi，模拟服务端
 8. concurrently： 实现多命令同时运行
 9. react-router-dom：实现引用路由管理
+10. react-loadable: 做异步路由
 
 ## 应用架构
 
@@ -78,3 +79,7 @@
 
 ![img](/images/transform-runtime-handler.png)
 
+## 待续
+1. 加入immutable支持不可变数据
+2. 加入redux-persit支持redux状态树的持久化
+3. 加入jest集成应用测试
