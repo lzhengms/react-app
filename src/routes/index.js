@@ -3,7 +3,7 @@
  * @Author: lzhengms 
  * @Date: 2019-10-06 10:31:56 
  * @Last Modified by: lzhengms
- * @Last Modified time: 2019-10-06 21:12:30
+ * @Last Modified time: 2019-10-11 11:27:35
  */
 import { BrowserRouter as Router, Switch, Route } from 'react-router-dom';
 import React, { Component }  from 'react';
@@ -20,8 +20,8 @@ import { actions as AppActions } from 'store/appFlux';
 import LoadingComponent from 'components/Loading';
 
 const AsyncAbout = reactLoad({
-    loader: () => import('../components/About'),
-    loading: LoadingComponent
+  loader: () => import('../components/About'),
+  loading: LoadingComponent
 })
 
 const AsyncHome = reactLoad({
@@ -101,21 +101,6 @@ class Routes extends Component {
     );
   }
 }
-/* <ConnectedRouter history={history}>
-       <Launch className={classes.root}>
-          <BlogHeader />
-          <div className={classes.wrap}>
-            <div className={classes.content}>
-              <Layout>
-                <Router>
-                  <Route path='/' exact component={AsyncHome}/>
-                  <Route path='/about' exact component={AsyncAbout} />
-                </Router>
-              </Layout>
-            </div>
-          </div>
-        </Launch>
-      </ConnectedRouter> */
 const mapDispatchToProps = (dispatch) => {
   return bindActionCreators({
     requestPostList: AppActions.requestPostList
